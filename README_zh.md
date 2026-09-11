@@ -15,7 +15,8 @@
 ## 快速开始
 
 ```bash
-npm run build    # 安装并构建前端控制台
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 npm start        # 启动，监听 http://0.0.0.0:3050
 ```
 
@@ -39,7 +40,8 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 ```bash
 git clone https://github.com/1deaaa/cmdgo2api.git
 cd cmdgo2api
-npm run build    # 安装并构建前端控制台
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 npm start
 ```
 
@@ -60,7 +62,7 @@ docker compose logs -f proxy
 cmdgo2api/
 ├── config.json           # 端口 / 日志路径等
 ├── LICENSE               # MIT License（上游 + 本分支）
-├── package.json          # npm start / npm run build / npm run dev
+├── package.json          # npm start / npm run dev
 ├── proxy.mjs             # 单文件核心代理（~1900 行）
 ├── web/                  # Web 控制台、管理 API 和前端构建工程
 ├── tools/                # 远程授权助手
@@ -138,6 +140,7 @@ header。该开关只是请求 Command Code 使用 ZDR-only 路由，实际数�
 - 用量在控制台存活期间每 60 秒后台异步刷新一次。
 - “更新项目并重启”只在 Git 工作树干净时执行 `git pull --ff-only`、前端安装和构建；检测到本地改动会停止，不会覆盖文件。
 - 本地控制台（`127.0.0.1`、`localhost` 或 `::1`）使用官方浏览器授权和本地回调。远程控制台不会伪造公网回调，因为 Command Code 官方明确只接受本机回调；点击“添加账号”后会生成有效期约 10 分钟的一次性授权助手命令。命令在可信本地电脑运行，助手临时监听本机回环地址接收官方回调，并通过 HTTPS 将结果交给远程控制台，页面不会显示或要求粘贴上游 token。一次性票据只以哈希形式保存在服务端，完成后立即失效。也可以通过 SSH 端口转发访问本机控制台，以保留完整浏览器授权流程。
+- 每次点击“添加账号”都会请求官方重新登录，避免静默复用浏览器中已登录的账号。如果授权页仍显示旧账号，请先退出 Command Code，或用浏览器隐私窗口重新打开授权页。
 
 运行时敏感文件位于 `~/.config/commandcode-proxy/credentials.env`，模型设置位于同目录的 `settings.json`，多账号 token 与额度快照位于同目录的 `accounts.json`，当前账号兼容写入 `~/.commandcode/auth.json`。程序会以当前用户权限保存这些文件，升级时会自动迁移旧版单账号 `auth.json`，建议不要将它们加入 Git 或复制到公开目录。
 
@@ -535,7 +538,8 @@ PROXY_PORT=13050 docker compose up -d
 ### 从源码构建
 
 ```bash
-npm run build
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 docker build -t commandcode-proxy:latest .
 docker run -d -p 3050:3050 -e PORT=3050 commandcode-proxy:latest
 ```
@@ -728,6 +732,6 @@ Command Code 名称、网站和服务属于其各自权利人，本项目不是 
 ## 开发
 
 ```bash
-npm run web:dev   # 前端开发服务器
-npm run dev       # 代理（node --watch 自动重启）
+npm --prefix web run dev
+npm run dev
 ```
