@@ -200,6 +200,7 @@ export async function main(argv = process.argv.slice(2)) {
         loginUrl.searchParams.set('state', options.state);
         loginUrl.searchParams.set('mode', 'redirect');
         loginUrl.searchParams.set('client', 'commandcode-proxy-bridge');
+        loginUrl.searchParams.set('prompt', 'login');
         console.log('授权助手已启动，正在打开 Command Code 官方授权页。');
         if (!await openBrowser(loginUrl.toString())) {
           console.log(`请在本机浏览器打开：${loginUrl.toString()}`);
