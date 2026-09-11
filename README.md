@@ -15,7 +15,8 @@ Built by analyzing official CLI network traffic to accurately replicate the Comm
 ## Quick Start
 
 ```bash
-npm run build    # Install and build the web console
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 npm start        # Start (the repo ships with config.json listening on http://0.0.0.0:3050)
 ```
 
@@ -39,7 +40,8 @@ Node.js 18 or newer is required. Install frontend dependencies and build once, t
 ```bash
 git clone https://github.com/1deaaa/cmdgo2api.git
 cd cmdgo2api
-npm run build    # Install and build the web console
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 npm start
 ```
 
@@ -60,7 +62,7 @@ The default host port is `3050`. Override it with `PROXY_PORT=13050 docker compo
 cmdgo2api/
 ├── config.json           # Port / log path etc.
 ├── LICENSE               # MIT License (upstream + this fork)
-├── package.json          # npm start / npm run build / npm run dev
+├── package.json          # npm start / npm run dev
 ├── proxy.mjs             # Single-file proxy core (~1900 lines)
 ├── web/                  # Web console, admin API, and frontend build project
 ├── tools/                # Remote authorization helper
@@ -140,6 +142,7 @@ The console is available at `/console`; its management API is under `/admin/api`
 - Usage refreshes in the background every 60 seconds while the console is open.
 - Update and restart runs only when the Git worktree is clean, using `git pull --ff-only`, frontend dependency installation, and a production build. Local changes are refused rather than overwritten.
 - Local consoles (`127.0.0.1`, `localhost`, or `::1`) use the official browser authorization and loopback callback. Remote consoles do not fake a public callback because Command Code only accepts loopback callbacks. Instead, **Add account** generates a one-time command that runs the local authorization helper on a trusted computer. The helper receives the official loopback callback locally and forwards the result over HTTPS; the console never displays or asks you to paste the upstream token. The ticket is stored only as a hash on the server, expires in about 10 minutes, and is invalidated after one use. SSH port forwarding is also supported when you want to keep the full browser flow.
+- Each **Add account** attempt requests a fresh official login instead of silently reusing the browser's current account. If the authorization page still shows the old account, sign out of Command Code first or reopen the authorization URL in a private browser window.
 
 Runtime credentials are stored in `~/.config/commandcode-proxy/credentials.env`, model settings in `~/.config/commandcode-proxy/settings.json`, and multiple account tokens plus cached quotas in `~/.config/commandcode-proxy/accounts.json`. The active account is also mirrored to `~/.commandcode/auth.json` for compatibility. Files are created with restrictive permissions; an older single-account `auth.json` is migrated automatically and must not be committed or copied to a public directory.
 
@@ -523,7 +526,8 @@ PROXY_PORT=13050 docker compose up -d
 ### Build from Source
 
 ```bash
-npm run build
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 docker build -t commandcode-proxy:latest .
 docker run -d -p 3050:3050 -e PORT=3050 commandcode-proxy:latest
 ```
@@ -710,6 +714,6 @@ This project is for **educational and research purposes** only.
 ## Development
 
 ```bash
-npm run web:dev   # Frontend dev server
-npm run dev       # Proxy (node --watch auto-restart)
+npm --prefix web run dev
+npm run dev
 ```
