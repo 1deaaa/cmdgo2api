@@ -349,6 +349,7 @@ function AuthBanner({ session, onOpen, onCancel, onSubmitToken, token, tokenShow
       </div>
       <Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink size={15} /> 打开授权页</Button>
       <Button type="button" size="icon" variant="ghost" aria-label="取消登录" title="取消登录" onClick={onCancel}><X size={17} /></Button>
+      <p className="auth-banner-note auth-banner-note-wide">如果官方授权页仍显示旧账号，请先退出当前 Command Code 账号，或用浏览器隐私窗口重新打开授权页。</p>
     </div>
   );
 }
