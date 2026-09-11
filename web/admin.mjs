@@ -444,55 +444,6 @@ function usageHasAvailableQuotas(usage) {
     && USAGE_QUOTA_KEYS.every((key) => quotaKnown(usage[key], key) && !quotaIsFull(usage[key], key));
 }
 
-// 上游限额错误的文案匹配。官方 CLI 会优先读取结构化的 rateLimit.window；
-// 拿不到结构化字段时，用这些关键词兜底判断（与官方 CLI 的匹配逻辑保持一致）。
-const QUOTA_LIMIT_MESSAGE_PATTERNS = [
-  /usage limit for your plan/i,
-  /(?:reached|hit|exceeded)[^.]{0,40}(?:5[ -]?hour|five[ -]?hour|weekly|daily|monthly|month)[^.]{0,30}limit/i,
-  /(?:5[ -]?hour|five[ -]?hour|weekly|daily|monthly|month)[^.]{0,30}(?:usage )?limit (?:reached|exceeded)/i,
-  /insufficient credits/i,
-  /premium credits?[^.]{0,20}(?:exhausted|used up)/i,
-  /spend(?:ing)? limit (?:reached|exceeded)/i,
-];
-
-function quotaWindowKey(value) {
-  const window = text(value).toLowerCase().replaceAll('_', '-');
-  if (['fivehour', 'five-hour', '5-hour', '5hour', 'daily', 'day'].includes(window)) return 'fiveHour';
-  if (['weekly', 'week'].includes(window)) return 'weekly';
-  if (['monthly', 'month'].includes(window)) return 'monthly';
-  return null;
-}
-
-function quotaWindowFromMessage(message) {
-  if (/weekly/i.test(message)) return 'weekly';
-  if (/month(?:ly)?/i.test(message)) return 'monthly';
-  if (/credits?|spend/i.test(message)) return 'monthly';
-  // 官方 CLI 的兜底规则：只命中 “usage limit for your plan” 时按 5 小时窗口处理。
-  return 'fiveHour';
-}
-
-function quotaResetAtMs({ rateLimit, message }) {
-  if (finiteNumber(rateLimit?.reset) !== null) return Number(rateLimit.reset) * 1000;
-  const match = text(message).match(/resets? at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i);
-  if (!match) return null;
-  const parsed = Date.parse(match[1]);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-// 解析上游错误，判断是否为“额度窗口耗尽”类错误。
-// 返回 null 表示普通错误（例如临时 429 限流），不应触发切号。
-export function parseUpstreamQuotaLimit({ status, code, message, rateLimit } = {}) {
-  const rawMessage = text(message);
-  const structuredWindow = quotaWindowKey(rateLimit?.window);
-  const messageMatched = QUOTA_LIMIT_MESSAGE_PATTERNS.some((pattern) => pattern.test(rawMessage));
-  if (!structuredWindow && !messageMatched) return null;
-  return {
-    window: structuredWindow || quotaWindowFromMessage(rawMessage),
-    model: text(rateLimit?.model) || null,
-    resetAtMs: quotaResetAtMs({ rateLimit, message: rawMessage }),
-  };
-}
-
 async function fetchJson(url, apiKey) {
   let response;
   try {
@@ -990,35 +941,6 @@ export function createAdminController({
       previousAccountId: accountId,
       account: activeAccount(),
     };
-  }
-
-  // 上游请求过程中命中额度窗口限制时，立即把当前账号标记为耗尽并切换，
-  // 不再等待控制台 60 秒一次的用量轮询。
-  function handleUpstreamQuotaLimit(info) {
-    const limit = parseUpstreamQuotaLimit(info || {});
-    if (!limit) return { detected: false, switched: false };
-    const current = activeAccount();
-    if (!current) return { detected: true, switched: false, window: limit.window, resetAt: limit.resetAtMs };
-    // 同一次失败请求可能产生多个错误事件；切号后迟到的旧账号事件不能误伤新账号。
-    if (info?.apiKey && current.apiKey !== info.apiKey) {
-      return { detected: true, switched: false, stale: true, window: limit.window, resetAt: limit.resetAtMs };
-    }
-    markQuotaExhausted(current.id, limit.window);
-    const switchResult = autoSwitchExhaustedAccount(current.id);
-    return { detected: true, window: limit.window, resetAt: limit.resetAtMs, ...switchResult };
-  }
-
-  function markQuotaExhausted(accountId, quotaKey) {
-    if (!quotaKey) return;
-    updateAccount(accountId, (account) => {
-      const usage = isObject(account.usage) ? account.usage : {};
-      const quota = isObject(usage[quotaKey]) ? usage[quotaKey] : {};
-      return {
-        ...account,
-        usage: { ...usage, [quotaKey]: { ...quota, known: true, exceeded: true } },
-        usageError: '',
-      };
-    });
   }
 
   function initializeAccountStore() {
@@ -1520,6 +1442,7 @@ export function createAdminController({
         loginUrl.searchParams.set('state', state);
         loginUrl.searchParams.set('mode', 'redirect');
         loginUrl.searchParams.set('client', 'commandcode-proxy-web');
+        loginUrl.searchParams.set('prompt', 'login');
         sendJson(response, 200, {
           ok: true,
           state,
@@ -1675,7 +1598,6 @@ export function createAdminController({
       sendText(response, 404, '控制台页面不存在');
       return true;
     },
-    handleUpstreamQuotaLimit,
   };
 }
 
