@@ -17,6 +17,7 @@ import {
   readRuntimeCredentials,
   readRuntimeSettings,
 } from './web/admin.mjs';
+import { mapAnthropicThinkingToReasoningEffort } from './reasoning.mjs';
 
 // ── 配置加载 ──────────────────────────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1648,19 +1649,8 @@ function convertAnthropicToOpenAI(anthropicReq) {
   if (anthropicReq.metadata?.user_id) openaiReq.user = anthropicReq.metadata.user_id;
 
   // 7. Anthropic thinking → reasoning_effort（LiteLLM 标准映射）
-  if (anthropicReq.thinking) {
-    const t = anthropicReq.thinking;
-    if (t.type === 'disabled' || t.type === 'none') {
-      // 不发送 reasoning_effort
-    } else if (t.type === 'adaptive') {
-      openaiReq.reasoning_effort = t.effort ?? 'medium';
-    } else if (t.budget_tokens !== undefined) {
-      if (t.budget_tokens >= 10000) openaiReq.reasoning_effort = 'high';
-      else if (t.budget_tokens >= 5000) openaiReq.reasoning_effort = 'medium';
-      else if (t.budget_tokens >= 2000) openaiReq.reasoning_effort = 'low';
-      else openaiReq.reasoning_effort = 'low'; // <2000 → low
-    }
-  }
+  const reasoningEffort = mapAnthropicThinkingToReasoningEffort(anthropicReq.thinking);
+  if (reasoningEffort !== undefined) openaiReq.reasoning_effort = reasoningEffort;
 
   return openaiReq;
 }
