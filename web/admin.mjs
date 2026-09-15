@@ -1520,6 +1520,7 @@ export function createAdminController({
         loginUrl.searchParams.set('state', state);
         loginUrl.searchParams.set('mode', 'redirect');
         loginUrl.searchParams.set('client', 'commandcode-proxy-web');
+        loginUrl.searchParams.set('prompt', 'login');
         sendJson(response, 200, {
           ok: true,
           state,
