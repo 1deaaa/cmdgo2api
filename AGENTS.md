@@ -59,7 +59,7 @@ npm start                        # 起服务，验证 /health、/console、登�
 
 ### 本分支新增文件（自由修改）
 
-`web/admin.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`AGENTS.md`
+`web/admin.mjs`、`web/request-log.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`AGENTS.md`
 
 - 控制台 UI、管理 API、账号存储、远程授权等高耦合功能**必须**留在这些文件里，不要塞进 `proxy.mjs`。
 - `web/dist/` 与 `web/node_modules/` 被 `.gitignore` 忽略，构建产物不入库；部署机需要执行一次 `npm run build`。
@@ -74,8 +74,9 @@ npm start                        # 起服务，验证 /health、/console、登�
 6. `handleChatCompletions()` / `handleMessages()`：模型白名单拦截。
 7. `handleModels()`：网关校验 + 白名单过滤。
 8. CORS 允许 `DELETE`；`server` 请求入口接入 `adminController.handle()`。
-9. 文件末尾：`closeServer()` / `restartServer()` / `runMaintenanceCommand()` / `updateProject()` / `relaunchProcess()`、`createAdminController(...)`，并注册 `upstreamQuotaLimitHandler`。
+9. 文件末尾：`closeServer()` / `restartServer()` / `runMaintenanceCommand()` / `updateProject()` / `relaunchProcess()`、`createAdminController(...)`，并注册 `upstreamQuotaLimitHandler` / `requestLogHandler`。
 10. 启动日志：网关密钥与 CC key 的配置状态提示。
+11. `forwardToCC()`：通过 `web/request-log.mjs` 旁路采集调用日志（`response.clone()`，不改变下发内容），供控制台 `/admin/api/requests` 使用。
 
 ### 当前平衡度评估（结论与建议）
 

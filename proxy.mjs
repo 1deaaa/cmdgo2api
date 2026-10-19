@@ -21,6 +21,7 @@ import {
   readRuntimeSettings,
 } from './web/admin.mjs';
 import { mapAnthropicThinkingToReasoningEffort } from './reasoning.mjs';
+import { buildUpstreamFailureEntry, instrumentUpstreamResponse } from './web/request-log.mjs';
 
 // ── 配置加载 ──────────────────────────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1216,6 +1217,8 @@ function incompleteUpstreamError(detail) {
 // 下游账号自动切换钩子：由 web/admin.mjs 的控制器注册（见文件末尾）。
 // 上游请求命中额度窗口限制时立即切号，而不是等控制台的 60 秒用量轮询。
 let upstreamQuotaLimitHandler = null;
+// 调用日志钩子：同样由控制器注册；日志采集失败不影响代理请求。
+let requestLogHandler = null;
 
 function reportUpstreamQuotaLimit(info) {
   if (typeof upstreamQuotaLimitHandler !== 'function') return;
@@ -1623,6 +1626,7 @@ function upstreamFetch(urlStr, options) {
 // ── 流式转发 ────────────────────────────────────────
 
 async function forwardToCC(body, apiKey, incomingHeaders = {}, signal, promptCacheKey) {
+  const startedAt = Date.now();
   const url = `${CFG.apiBase}/alpha/generate`;
   const traceparent = generateTraceparent();
   const sessionId = getSessionId(incomingHeaders, apiKey, promptCacheKey, body);
@@ -1653,14 +1657,30 @@ async function forwardToCC(body, apiKey, incomingHeaders = {}, signal, promptCac
     headers['x-cmd-zdr'] = '1';
   }
 
-  const response = await upstreamFetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const logContext = {
+    model: body?.params?.model || '',
+    reasoningEffort: body?.params?.reasoning_effort ?? null,
+    presentedKey: getPresentedApiKey(incomingHeaders),
+    accountApiKey: apiKey,
+    startedAt,
+  };
 
-  return response;
+  let response;
+  try {
+    response = await upstreamFetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (error) {
+    // 连接层失败没有 Response 可旁路，直接补一条错误日志再向上抛
+    requestLogHandler?.(buildUpstreamFailureEntry(logContext, error));
+    throw error;
+  }
+
+  if (typeof requestLogHandler !== 'function') return response;
+  return instrumentUpstreamResponse(response, logContext, (entry) => requestLogHandler?.(entry));
 }
 
 // ── 路由 ────────────────────────────────────────────
@@ -4219,6 +4239,7 @@ const adminController = createAdminController({
   relaunch: relaunchProcess,
 });
 upstreamQuotaLimitHandler = (info) => adminController.handleUpstreamQuotaLimit(info);
+requestLogHandler = (entry) => adminController.recordRequest(entry);
 
 // 全局兜底：abort 触发的异步 rejection 不会让进程崩溃
 process.on('unhandledRejection', (reason) => {

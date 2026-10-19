@@ -326,7 +326,7 @@
 .topbar-actions > a:hover { color: var(--brand); border-color: #c7cef9; background: #f8f9ff; }
 .page-heading {
   display: flex;
-  max-width: 1240px;
+  max-width: 1480px;
   box-sizing: border-box;
   align-items: flex-end;
   justify-content: space-between;
@@ -345,7 +345,7 @@
 .page-heading-meta { gap: 7px; color: #a1a1aa; font-size: 11px; }
 
 .page-body {
-  max-width: 1240px;
+  max-width: 1480px;
   box-sizing: border-box;
   margin: 0 auto;
   padding: 0 clamp(22px, 4vw, 62px) 64px;
@@ -535,6 +535,42 @@
 .model-owner { max-width: 150px; overflow: hidden; color: #a1a1aa; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .model-loading, .model-empty { display: flex; min-height: 150px; align-items: center; justify-content: center; gap: 8px; color: #71717a; font-size: 12px; }
 .model-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: #a1a1aa; font-size: 10px; }
+
+/* ── 调用日志表 ───────────────────────────────── */
+.log-card { margin-top: 12px; overflow: hidden; }
+.log-table-wrap { overflow-x: auto; }
+.log-table { width: 100%; min-width: 1180px; border-collapse: separate; border-spacing: 0; }
+.log-table thead th { background: #fafafa; border-bottom: 1px solid #ececef; padding: 12px 14px; color: #a1a1aa; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-align: left; text-transform: uppercase; white-space: nowrap; }
+.log-table tbody td { border-bottom: 1px solid #f2f2f4; padding: 12px 14px; vertical-align: middle; color: #3f3f46; font-size: 13px; }
+.log-table tbody tr:last-child td { border-bottom: 0; }
+.log-table tbody tr:hover { background: #fbfbfe; }
+.log-row-expanded { background: #fbfbfe; }
+.log-time { display: block; color: #3f3f46; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.log-model { display: block; max-width: 220px; overflow: hidden; color: #18181b; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.log-provider { display: block; margin-top: 2px; color: #a1a1aa; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+.log-effort { text-transform: lowercase; }
+.log-metric strong { display: block; color: #18181b; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.25; }
+.log-sub { display: block; margin-top: 3px; color: #a1a1aa; font-size: 11px; white-space: nowrap; }
+.log-sub em { color: #147568; font-style: normal; font-weight: 700; }
+.log-value { display: block; color: #3f3f46; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.log-muted-value { color: #a1a1aa !important; }
+.log-token { color: #52525b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; letter-spacing: 0.02em; }
+.log-account { display: block; max-width: 180px; margin-top: 3px; overflow: hidden; color: #71717a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.log-status-button { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 0; cursor: pointer; }
+.log-status-button:hover { opacity: 0.82; }
+.log-error-code { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
+.log-chevron { color: #be123c; transition: transform 180ms ease; }
+.log-chevron.is-open { transform: rotate(180deg); }
+.log-detail-row td { padding: 0 14px 15px; border-bottom: 1px solid #f2f2f4; background: #fffafa; }
+.log-detail { overflow: hidden; border: 1px solid #fecdd3; border-radius: 9px; background: #fff; }
+.log-detail-head { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-bottom: 1px solid #ffe4e6; color: #be123c; }
+.log-detail-head strong { overflow: hidden; color: #7f1d1d; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.log-detail-head span { margin-left: auto; color: #a1a1aa; font-size: 11px; white-space: nowrap; }
+.log-detail pre { max-height: 240px; margin: 0; overflow: auto; padding: 12px 14px; background: #fcfcfd; color: #3f3f46; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.log-empty { display: flex; align-items: center; gap: 13px; padding: 26px; }
+.log-empty-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: 10px; color: #147568; background: var(--mint); }
+.log-empty h3 { margin: 0; color: #18181b; font-size: 15px; font-weight: 700; }
+.log-empty p { margin: 4px 0 0; color: #71717a; font-size: 12.5px; }
 
 .spin { animation: spin 900ms linear infinite; }
 

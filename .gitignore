@@ -16,6 +16,8 @@ credentials.env
 auth.json
 accounts.json
 settings.json
+request-log.jsonl
+.request-log.*.tmp
 
 # Environment files
 .env

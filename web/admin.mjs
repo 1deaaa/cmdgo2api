@@ -6,6 +6,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -25,6 +26,10 @@ const CONSOLE_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const CONSOLE_COOKIE_NAME = 'cc_console_session';
 const MAX_GATEWAY_KEYS = 32;
 const MAX_ACCOUNTS = 32;
+const MAX_REQUEST_LOGS = 300;
+const MAX_REQUEST_LOG_FILE_LINES = 1200;
+const REQUEST_LOG_FILE_NAME = 'request-log.jsonl';
+const MAX_REQUEST_ERROR_DETAIL = 4000;
 const MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_RUNTIME_DIR = join(homedir(), '.config', 'commandcode-proxy');
 const DEFAULT_AUTH_FILE = join(homedir(), '.commandcode', 'auth.json');
@@ -784,6 +789,30 @@ function writeRuntimeSettings(runtimeDir, allowedModelIds) {
   chmodSync(target, 0o600);
 }
 
+// 从本地 JSONL 读取最近的调用日志。文件按时间顺序追加，返回时反转为最新在前。
+function readStoredRequestLogs(filePath, limit) {
+  if (!existsSync(filePath)) return { records: [], lines: 0 };
+  let raw;
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch {
+    return { records: [], lines: 0 };
+  }
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim());
+  const records = [];
+  for (const line of lines) {
+    try {
+      const value = JSON.parse(line);
+      if (value && typeof value === 'object' && typeof value.id === 'string' && typeof value.at === 'string') {
+        records.push(value);
+      }
+    } catch {
+      // 跳过损坏行；文件轮转时会重写为纯合法内容
+    }
+  }
+  return { records: records.slice(-limit).reverse(), lines: lines.length };
+}
+
 export function createAdminController({
   config,
   projectDir,
@@ -799,6 +828,22 @@ export function createAdminController({
   const browserSessions = new Map();
   const consoleSessions = new Map();
   const loginFailures = new Map();
+  // 调用日志：内存保留最近 MAX_REQUEST_LOGS 条，同时追加到运行目录的 JSONL；
+  // 进程重启后从本地文件恢复。测试模式不落盘，避免污染真实运行目录。
+  const requestLogPersistence = process.env.CC_TEST_MODE !== '1';
+  const requestLogFile = join(runtimeDir, REQUEST_LOG_FILE_NAME);
+  if (requestLogPersistence) {
+    try {
+      mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    } catch {
+      // 目录创建失败时仍保留内存日志
+    }
+  }
+  const storedRequestLog = requestLogPersistence
+    ? readStoredRequestLogs(requestLogFile, MAX_REQUEST_LOGS)
+    : { records: [], lines: 0 };
+  const requestLogs = storedRequestLog.records;
+  let requestLogFileLines = storedRequestLog.lines;
   const startedAt = new Date().toISOString();
   let modelCache = null;
   let accountStore = readAccountStore(accountsFile, authFile, {
@@ -853,6 +898,69 @@ export function createAdminController({
 
   function findAccount(accountId) {
     return accountStore.accounts.find((account) => account.id === accountId) || null;
+  }
+
+  // 调用日志里的账号名按请求实际使用的 CC key 反查，账号切换后历史记录仍然正确。
+  function requestAccountName(apiKey) {
+    if (!apiKey) return '未知账号';
+    const account = accountStore.accounts.find((item) => item.apiKey === apiKey);
+    return text(account?.userName) || text(account?.email) || text(account?.keyName) || '未知账号';
+  }
+
+  function recordRequest(entry) {
+    if (!isObject(entry)) return;
+    const asCount = (value) => Math.max(0, Math.trunc(finiteNumber(value) ?? 0));
+    const record = {
+      id: `req-${randomBytes(8).toString('hex')}`,
+      at: text(entry.at) || new Date().toISOString(),
+      model: text(entry.model) || '未知模型',
+      reasoningEffort: text(entry.reasoningEffort) || null,
+      effectiveEffort: text(entry.effectiveEffort) || null,
+      provider: text(entry.provider) || null,
+      inputTokens: asCount(entry.inputTokens),
+      cachedTokens: asCount(entry.cachedTokens),
+      outputTokens: asCount(entry.outputTokens),
+      reasoningTokens: asCount(entry.reasoningTokens),
+      textTokens: asCount(entry.textTokens),
+      // 首字时间可能为 null（上游未产出内容就结束）
+      ttftMs: entry.ttftMs === null || entry.ttftMs === undefined ? null : asCount(entry.ttftMs),
+      durationMs: asCount(entry.durationMs),
+      speed: entry.speed === null || entry.speed === undefined ? null : Math.max(0, number(entry.speed)),
+      maskedToken: text(entry.maskedToken) || '—',
+      accountName: requestAccountName(text(entry.accountApiKey)),
+      status: entry.status === 'error' ? 'error' : 'success',
+      httpStatus: asCount(entry.httpStatus),
+      errorCode: text(entry.errorCode) || null,
+      errorMessage: text(entry.errorMessage) || null,
+      errorDetail: text(entry.errorDetail).slice(0, MAX_REQUEST_ERROR_DETAIL) || null,
+    };
+    requestLogs.unshift(record);
+    if (requestLogs.length > MAX_REQUEST_LOGS) requestLogs.length = MAX_REQUEST_LOGS;
+    persistRequestLog(record);
+  }
+
+  // 追加一条 JSONL；文件超过阈值时重写为当前内存中的最近记录，避免无限增长。
+  function persistRequestLog(record) {
+    if (!requestLogPersistence) return;
+    try {
+      if (requestLogFileLines >= MAX_REQUEST_LOG_FILE_LINES) rewriteRequestLogFile();
+      appendFileSync(requestLogFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+      requestLogFileLines += 1;
+    } catch {
+      // 落盘失败不影响代理主流程，内存日志仍然可用
+    }
+  }
+
+  function rewriteRequestLogFile() {
+    const directory = resolve(requestLogFile, '..');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const temporary = join(directory, `.request-log.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+    const body = [...requestLogs].reverse().map((item) => JSON.stringify(item)).join('\n');
+    writeFileSync(temporary, body ? `${body}\n` : '', { encoding: 'utf8', mode: 0o600 });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, requestLogFile);
+    chmodSync(requestLogFile, 0o600);
+    requestLogFileLines = requestLogs.length;
   }
 
   function accountMatches(left, right) {
@@ -1296,6 +1404,13 @@ export function createAdminController({
       return true;
     }
 
+    if (url.pathname === '/admin/api/requests' && request.method === 'GET') {
+      const requested = finiteNumber(url.searchParams.get('limit'));
+      const limit = requested && requested > 0 ? Math.min(Math.trunc(requested), MAX_REQUEST_LOGS) : MAX_REQUEST_LOGS;
+      sendJson(response, 200, { ok: true, requests: requestLogs.slice(0, limit), total: requestLogs.length, maxEntries: MAX_REQUEST_LOGS });
+      return true;
+    }
+
     if (url.pathname === '/admin/api/accounts' && request.method === 'GET') {
       sendJson(response, 200, { ok: true, ...accountPayload() });
       return true;
@@ -1677,6 +1792,7 @@ export function createAdminController({
       return true;
     },
     handleUpstreamQuotaLimit,
+    recordRequest,
   };
 }
 

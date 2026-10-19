@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   Check,
   CheckCheck,
+  ChevronDown,
   CircleAlert,
   Clock3,
   Copy,
@@ -414,7 +415,7 @@ function AccountList({ accounts, activeAccountId, onActivate, onDelete, onRefres
   );
 }
 
-function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, onOpenAuth, onCancelAuth, onSubmitToken, authToken, authTokenShown, onAuthTokenChange, onToggleAuthToken, authTokenSaving, error, actionMessage, onActivateAccount, onDeleteAccount, onRefreshAccounts }) {
+function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, onOpenAuth, onCancelAuth, onSubmitToken, authToken, authTokenShown, onAuthTokenChange, onToggleAuthToken, authTokenSaving, error, actionMessage, onActivateAccount, onDeleteAccount, onRefreshAccounts, requests, requestsTotal, requestsLoading, requestsError, onRefreshRequests }) {
   const hasUsage = Boolean(usage);
   const accounts = config?.accounts || [];
   return (
@@ -453,7 +454,191 @@ function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, 
           </div>
         </>
       )}
+      <RequestLog
+        requests={requests}
+        total={requestsTotal}
+        loading={requestsLoading}
+        error={requestsError}
+        onRefresh={onRefreshRequests}
+      />
     </div>
+  );
+}
+
+function formatLogTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatLogNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString('en-US') : '0';
+}
+
+function formatLogTtft(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—';
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+  return `${(milliseconds / 1000).toFixed(2)} s`;
+}
+
+function cacheHitRate(row) {
+  const input = Number(row.inputTokens) || 0;
+  const cached = Number(row.cachedTokens) || 0;
+  if (input <= 0) return 0;
+  return Math.max(0, Math.min(100, (cached / input) * 100));
+}
+
+function effortAppearance(effort) {
+  const value = String(effort ?? '').trim().toLowerCase();
+  if (!value || value === 'none' || value === 'default') return { label: '默认', variant: 'dark' };
+  if (value === 'minimal' || value === 'low') return { label: value, variant: 'gray' };
+  if (value === 'medium' || value === 'mid') return { label: value, variant: 'green' };
+  if (value === 'high') return { label: value, variant: 'blue' };
+  if (value === 'xhigh' || value === 'x-high' || value === 'extra-high') return { label: 'xhigh', variant: 'purple' };
+  if (value === 'max' || value === 'maximum') return { label: value, variant: 'orange' };
+  return { label: value, variant: 'neutral' };
+}
+
+function RequestLog({ requests, total, loading, error, onRefresh }) {
+  const [expandedId, setExpandedId] = useState('');
+  const rows = (Array.isArray(requests) ? requests : []).slice(0, 20);
+  const storedCount = Math.max(Number(total) || 0, rows.length);
+  return (
+    <>
+      <SectionHeading
+        eyebrow="Request log"
+        title="调用日志"
+        description={`显示最近 ${rows.length} 条 · 本地已加载 ${storedCount} 条 · 每 20 秒自动刷新`}
+        action={(
+          <Button type="button" size="sm" variant="secondary" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={14} className={loading ? 'spin' : ''} /> 刷新日志
+          </Button>
+        )}
+      />
+      {error && <Notice>{error}</Notice>}
+      <Card className="log-card">
+        {rows.length === 0 ? (
+          <div className="log-empty">
+            <div className="log-empty-icon"><Activity size={20} /></div>
+            <div>
+              <h3>还没有调用记录</h3>
+              <p>通过代理发起一次对话请求后，这里会显示模型、token、缓存命中、首字延迟与错误详情。</p>
+            </div>
+          </div>
+        ) : (
+          <div className="log-table-wrap">
+            <table className="log-table">
+              <thead>
+                <tr>
+                  <th>调用时间</th>
+                  <th>模型</th>
+                  <th>推理强度</th>
+                  <th>输入 / 缓存</th>
+                  <th>输出（推理 / 正文）</th>
+                  <th>速度 / 首字</th>
+                  <th>令牌 / 账号</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const expanded = expandedId === row.id;
+                  const rate = cacheHitRate(row);
+                  const failed = row.status === 'error';
+                  const effort = effortAppearance(row.reasoningEffort);
+                  const speed = row.speed === null || row.speed === undefined ? '—' : `${Number(row.speed).toFixed(1)} tok/s`;
+                  return (
+                    <React.Fragment key={row.id}>
+                      <tr className={expanded ? 'log-row-expanded' : undefined}>
+                        <td>
+                          <span className="log-time" title={formatLogTime(row.at)}>{formatLogTime(row.at)}</span>
+                          {row.durationMs > 0 && <span className="log-sub">总耗时 {formatLogTtft(row.durationMs)}</span>}
+                        </td>
+                        <td>
+                          <code className="log-model" title={row.model}>{row.model || '—'}</code>
+                          {row.provider && <span className="log-provider">{row.provider}</span>}
+                        </td>
+                        <td>
+                          <Badge
+                            variant={effort.variant}
+                            className="log-effort"
+                            title={row.effectiveEffort ? `上游回显：${row.effectiveEffort}` : '上游未回显推理强度'}
+                          >
+                            {effort.label}
+                          </Badge>
+                        </td>
+                        <td>
+                          {failed && row.inputTokens === 0 ? (
+                            <div className="log-metric"><strong className="log-muted-value">—</strong><span className="log-sub">未收到 usage</span></div>
+                          ) : (
+                            <div className="log-metric">
+                              <strong>{formatLogNumber(row.inputTokens)}</strong>
+                              <span className="log-sub">缓存 {formatLogNumber(row.cachedTokens)} · <em>{rate.toFixed(1)}%</em></span>
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          {failed && row.outputTokens === 0 ? (
+                            <div className="log-metric"><strong className="log-muted-value">—</strong><span className="log-sub">无输出</span></div>
+                          ) : (
+                            <div className="log-metric">
+                              <strong>{formatLogNumber(row.outputTokens)}</strong>
+                              <span className="log-sub">推理 {formatLogNumber(row.reasoningTokens)} / 正文 {formatLogNumber(row.textTokens)}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <span className="log-value">{speed}</span>
+                          <span className="log-sub">首字 {formatLogTtft(row.ttftMs)}</span>
+                        </td>
+                        <td>
+                          <code className="log-token">{row.maskedToken || '—'}</code>
+                          <span className="log-account" title={row.accountName}>{row.accountName || '未知账号'}</span>
+                        </td>
+                        <td>
+                          {failed ? (
+                            <button
+                              type="button"
+                              className="log-status-button"
+                              onClick={() => setExpandedId(expanded ? '' : row.id)}
+                              aria-expanded={expanded}
+                              title="点击查看原始错误日志"
+                            >
+                              <Badge variant="danger" className="log-error-code">{row.errorCode || 'ERROR'}</Badge>
+                              <ChevronDown size={13} className={cn('log-chevron', expanded && 'is-open')} />
+                            </button>
+                          ) : (
+                            <Badge variant="success"><Check size={11} /> 成功</Badge>
+                          )}
+                        </td>
+                      </tr>
+                      {expanded && failed && (
+                        <tr className="log-detail-row">
+                          <td colSpan={8}>
+                            <div className="log-detail">
+                              <div className="log-detail-head">
+                                <CircleAlert size={14} />
+                                <strong>{row.errorMessage || '上游请求失败'}</strong>
+                                <span>{row.httpStatus ? `HTTP ${row.httpStatus} · ` : ''}{formatLogTime(row.at)}</span>
+                              </div>
+                              <pre>{row.errorDetail || '上游没有返回原始错误体。'}</pre>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </>
   );
 }
 
@@ -714,6 +899,11 @@ function Dashboard({
   onActivateAccount,
   onDeleteAccount,
   onRefreshAccounts,
+  requests,
+  requestsTotal,
+  requestsLoading,
+  requestsError,
+  onRefreshRequests,
   refreshing,
   authSession,
   onOpenAuth,
@@ -791,6 +981,11 @@ function Dashboard({
             onActivateAccount={onActivateAccount}
             onDeleteAccount={onDeleteAccount}
             onRefreshAccounts={onRefreshAccounts}
+            requests={requests}
+            requestsTotal={requestsTotal}
+            requestsLoading={requestsLoading}
+            requestsError={requestsError}
+            onRefreshRequests={onRefreshRequests}
             refreshing={refreshing}
             authSession={authSession}
             onOpenAuth={onOpenAuth}
@@ -817,6 +1012,10 @@ function App() {
   const [config, setConfig] = useState(null);
   const [status, setStatus] = useState(null);
   const [usage, setUsage] = useState(null);
+  const [requests, setRequests] = useState([]);
+  const [requestsTotal, setRequestsTotal] = useState(0);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [requestsError, setRequestsError] = useState('');
   const [models, setModels] = useState([]);
   const [selectedModelIds, setSelectedModelIds] = useState(new Set());
   const [modelsFetchedAt, setModelsFetchedAt] = useState(null);
@@ -846,6 +1045,7 @@ function App() {
   const authPollRef = useRef(null);
   const authPollingBusyRef = useRef(false);
   const usageRefreshingRef = useRef(false);
+  const requestsRefreshingRef = useRef(false);
   const configRef = useRef(null);
 
   configRef.current = config;
@@ -859,6 +1059,9 @@ function App() {
   const resetDashboard = useCallback(() => {
     setConfig(null);
     setUsage(null);
+    setRequests([]);
+    setRequestsTotal(0);
+    setRequestsError('');
     setModels([]);
     setSelectedModelIds(new Set());
     setModelsDirty(false);
@@ -943,6 +1146,23 @@ function App() {
     }
   }, [handleAuthError]);
 
+  const loadRequests = useCallback(async (silent = false) => {
+    if (silent && requestsRefreshingRef.current) return;
+    requestsRefreshingRef.current = true;
+    if (!silent) setRequestsLoading(true);
+    try {
+      const data = await request('/requests?limit=20');
+      setRequests(Array.isArray(data.requests) ? data.requests : []);
+      setRequestsTotal(Number(data.total) || 0);
+      setRequestsError('');
+    } catch (caught) {
+      if (!handleAuthError(caught)) setRequestsError(caught.message);
+    } finally {
+      requestsRefreshingRef.current = false;
+      if (!silent) setRequestsLoading(false);
+    }
+  }, [handleAuthError]);
+
   const loadModels = useCallback(async (forceRefresh = false) => {
     setModelsLoading(true);
     setModelsError('');
@@ -963,13 +1183,13 @@ function App() {
     setDashboardLoading(true);
     try {
       const [configData] = await Promise.all([loadConfig(), loadStatus()]);
-      await Promise.all([loadUsage(configData.hasUpstreamToken, true), loadModels(false)]);
+      await Promise.all([loadUsage(configData.hasUpstreamToken, true), loadModels(false), loadRequests(true)]);
     } catch (caught) {
       if (!handleAuthError(caught)) setError(caught.message);
     } finally {
       setDashboardLoading(false);
     }
-  }, [handleAuthError, loadConfig, loadModels, loadStatus, loadUsage]);
+  }, [handleAuthError, loadConfig, loadModels, loadStatus, loadUsage, loadRequests]);
 
   useEffect(() => {
     if (phase !== 'ready') return undefined;
@@ -979,6 +1199,13 @@ function App() {
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [phase, hydrateDashboard, loadUsage]);
+
+  // 调用日志比用量更新更频繁：只在概览页每 20 秒静默拉取一次。
+  useEffect(() => {
+    if (phase !== 'ready' || activeView !== 'overview') return undefined;
+    const timer = window.setInterval(() => { loadRequests(true); }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [phase, activeView, loadRequests]);
 
   useEffect(() => () => stopAuthPolling(), [stopAuthPolling]);
 
@@ -1356,6 +1583,11 @@ function App() {
       onActivateAccount={activateAccount}
       onDeleteAccount={deleteAccount}
       onRefreshAccounts={refreshAccounts}
+      requests={requests}
+      requestsTotal={requestsTotal}
+      requestsLoading={requestsLoading}
+      requestsError={requestsError}
+      onRefreshRequests={() => loadRequests(false)}
       refreshing={refreshing}
       authSession={authSession}
       onOpenAuth={openAuthPage}
