@@ -503,12 +503,12 @@ function effortAppearance(effort) {
   return { label: value, variant: 'neutral' };
 }
 
-function endpointLabel(endpoint) {
+function endpointAppearance(endpoint) {
   const value = String(endpoint ?? '').trim().toLowerCase();
-  if (value === 'chat') return 'Chat';
-  if (value === 'responses' || value === 'response') return 'Responses';
-  if (value === 'anthropic' || value === 'messages') return 'Anthropic';
-  return '';
+  if (value === 'chat') return { label: 'Chat', variant: 'blue' };
+  if (value === 'responses' || value === 'response') return { label: 'Responses', variant: 'green' };
+  if (value === 'anthropic' || value === 'messages') return { label: 'Anthropic', variant: 'orange' };
+  return null;
 }
 
 function RequestLogPage({ requests, error }) {
@@ -548,7 +548,7 @@ function RequestLogPage({ requests, error }) {
                   const rate = cacheHitRate(row);
                   const failed = row.status === 'error';
                   const effort = effortAppearance(row.reasoningEffort);
-                  const endpoint = endpointLabel(row.endpoint);
+                  const endpoint = endpointAppearance(row.endpoint);
                   const speed = row.speed === null || row.speed === undefined ? '—' : `${Number(row.speed).toFixed(1)} tok/s`;
                   return (
                     <React.Fragment key={row.id}>
@@ -596,7 +596,7 @@ function RequestLogPage({ requests, error }) {
                         </td>
                         <td>
                           {endpoint
-                            ? <Badge variant="neutral" className="log-endpoint">{endpoint}</Badge>
+                            ? <Badge variant={endpoint.variant} className="log-endpoint">{endpoint.label}</Badge>
                             : <span className="log-muted-value">—</span>}
                         </td>
                         <td>
