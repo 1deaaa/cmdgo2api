@@ -61,10 +61,21 @@ npm start                        # 起服务，验证 /health、/、/log、/set�
 
 ### 本分支新增文件（自由修改）
 
-`web/admin.mjs`、`web/request-log.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`AGENTS.md`
+`web/admin.mjs`、`web/request-log.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`reasoning.mjs`、`test/reasoning.test.mjs`、`test/reasoning-wire.test.mjs`、`AGENTS.md`
 
 - 控制台 UI、管理 API、账号存储、远程授权等高耦合功能**必须**留在这些文件里，不要塞进 `proxy.mjs`。
 - `web/dist/` 与 `web/node_modules/` 被 `.gitignore` 忽略，构建产物不入库；部署机需要执行一次 `npm run build`。
+
+### 推理档位映射（本分支新增，改动必须留在 reasoning.mjs）
+
+`reasoning.mjs` 承载 Anthropic 推理参数 → CC `reasoning_effort` 的全部判断：
+
+- 官方 `output_config.effort`（low/medium/high/xhigh/max）优先，兼容顶层 `reasoning_effort`、`reasoning.effort` 与旧客户端的 `thinking.effort`；
+- `thinking.type = disabled/none` 尝试下发 `off`（仅模型声明了 off 时），`adaptive`/`between_tools` 无档位时不再硬编码 medium；
+- 旧 `thinking.budget_tokens` 按 ≥16000/≥10000/≥5000 阈值推断（保持原有行为）；
+- 最终按目标模型声明的档位向上归一（静态表 + `/provider/v1/models` 的 `reasoningEfforts` 运行时覆盖）。
+
+`proxy.mjs` 侧只保留四个触点：import、`buildCcRequest` 里按模型归一、`convertAnthropicToOpenAI` 里一次调用、`fetchModels` 里一次注册。上游若改动这些位置，先接受上游版本，再把这四行重新贴上即可。
 
 ### `proxy.mjs` 当前 fork 触点清单（merge 时必须保留）
 

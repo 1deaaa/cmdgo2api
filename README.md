@@ -262,7 +262,7 @@ Anthropic Messages API compatible endpoint. Supports streaming, non-streaming, a
 | Tool results | `tool_result` blocks in `user` messages | Auto-converted to `role: "tool"` |
 | Tool definitions | `input_schema` | Auto-mapped to `parameters` |
 | `tool_choice` | `{type:"auto"/"any"/"tool"}` | `any`→`required`, `tool`→function object |
-| Reasoning | `thinking.budget_tokens` | Auto-mapped to `reasoning_effort` (≥16000→max, ≥10000→high, ≥5000→medium, <5000→low) |
+| Reasoning | `output_config.effort` / `thinking` | Uses official `output_config.effort` (low/medium/high/xhigh/max) first, also accepts top-level `reasoning_effort` and `thinking.effort`, `disabled` to turn thinking off, otherwise infers from `budget_tokens` (≥16000→max, ≥10000→high, ≥5000→medium, <5000→low); finally clamped up to the target model's declared levels |
 | Stop reason | `end_turn`/`max_tokens`/`tool_use` | Auto-mapped to `stop`/`length`/`tool_calls` |
 | Token usage | `input_tokens`/`output_tokens` + cache | Passed through, cache fields mapped to Anthropic format |
 

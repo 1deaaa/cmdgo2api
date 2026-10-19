@@ -20,7 +20,11 @@ import {
   readRuntimeCredentials,
   readRuntimeSettings,
 } from './web/admin.mjs';
-import { mapAnthropicThinkingToReasoningEffort } from './reasoning.mjs';
+import {
+  normalizeReasoningEffort,
+  registerModelEfforts,
+  resolveAnthropicEffort,
+} from './reasoning.mjs';
 import { buildUpstreamFailureEntry, instrumentUpstreamResponse } from './web/request-log.mjs';
 
 // ── 配置加载 ──────────────────────────────────────
@@ -879,7 +883,10 @@ function buildCcRequest(openaiReq) {
     body.params.temperature = temperature;
   }
   if (reasoning_effort !== undefined) {
-    body.params.reasoning_effort = reasoning_effort;
+    // 本分支新增：按目标模型声明的档位归一（OpenAI 系客户端可能传 xhigh / minimal 等，
+    // 直接透传会被上游拒绝或静默降级）。归一逻辑见 reasoning.mjs。
+    const normalizedEffort = normalizeReasoningEffort(reasoning_effort, model);
+    if (normalizedEffort !== undefined) body.params.reasoning_effort = normalizedEffort;
   }
   // CLI 总是下发 tools（没有工具时是空数组）—— 空数组与缺键在 wire 上可观测，这里对齐
   // CLI 的 toWireTools：只有 name / description / input_schema，没有 type 字段；
@@ -2468,8 +2475,10 @@ function convertAnthropicToOpenAI(anthropicReq) {
   if (anthropicReq.stop_sequences) openaiReq.stop = anthropicReq.stop_sequences;
   if (anthropicReq.metadata?.user_id) openaiReq.user = anthropicReq.metadata.user_id;
 
-  // 7. Anthropic thinking → reasoning_effort（LiteLLM 标准映射）
-  const reasoningEffort = mapAnthropicThinkingToReasoningEffort(anthropicReq.thinking);
+  // 7. Anthropic 推理参数 → reasoning_effort
+  // 官方协议以 output_config.effort 为准，thinking 只负责开关/模式/预算；
+  // 兼容旧客户端的 thinking.effort 与 budget_tokens。解析与归一全部在 reasoning.mjs。
+  const reasoningEffort = resolveAnthropicEffort(anthropicReq, anthropicReq.model);
   if (reasoningEffort !== undefined) openaiReq.reasoning_effort = reasoningEffort;
 
   return openaiReq;
@@ -3118,6 +3127,9 @@ async function fetchModels(apiKey) {
           id: m.id,
           name: m.id,
         }));
+        // 本分支新增：上游模型目录声明的 reasoningEfforts 交给 reasoning.mjs，
+        // 用于按真实能力归一（静态表只覆盖已核实的模型族）。
+        registerModelEfforts(data.data);
         modelsLastFetch = now;
         log('info', 'Fetched models from Provider API', { count: dynamicModels.length });
         return dynamicModels;
