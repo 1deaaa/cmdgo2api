@@ -415,7 +415,7 @@ function AccountList({ accounts, activeAccountId, onActivate, onDelete, onRefres
   );
 }
 
-function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, onOpenAuth, onCancelAuth, onSubmitToken, authToken, authTokenShown, onAuthTokenChange, onToggleAuthToken, authTokenSaving, error, actionMessage, onActivateAccount, onDeleteAccount, onRefreshAccounts, requests, requestsTotal, requestsLoading, requestsError, onRefreshRequests }) {
+function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, onOpenAuth, onCancelAuth, onSubmitToken, authToken, authTokenShown, onAuthTokenChange, onToggleAuthToken, authTokenSaving, error, actionMessage, onActivateAccount, onDeleteAccount, onRefreshAccounts }) {
   const hasUsage = Boolean(usage);
   const accounts = config?.accounts || [];
   return (
@@ -454,13 +454,6 @@ function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, 
           </div>
         </>
       )}
-      <RequestLog
-        requests={requests}
-        total={requestsTotal}
-        loading={requestsLoading}
-        error={requestsError}
-        onRefresh={onRefreshRequests}
-      />
     </div>
   );
 }
@@ -503,22 +496,11 @@ function effortAppearance(effort) {
   return { label: value, variant: 'neutral' };
 }
 
-function RequestLog({ requests, total, loading, error, onRefresh }) {
+function RequestLogPage({ requests, error }) {
   const [expandedId, setExpandedId] = useState('');
-  const rows = (Array.isArray(requests) ? requests : []).slice(0, 20);
-  const storedCount = Math.max(Number(total) || 0, rows.length);
+  const rows = (Array.isArray(requests) ? requests : []).slice(0, 50);
   return (
-    <>
-      <SectionHeading
-        eyebrow="Request log"
-        title="调用日志"
-        description={`显示最近 ${rows.length} 条 · 本地已加载 ${storedCount} 条 · 每 20 秒自动刷新`}
-        action={(
-          <Button type="button" size="sm" variant="secondary" onClick={onRefresh} disabled={loading}>
-            <RefreshCw size={14} className={loading ? 'spin' : ''} /> 刷新日志
-          </Button>
-        )}
-      />
+    <div className="page-body log-page-body">
       {error && <Notice>{error}</Notice>}
       <Card className="log-card">
         {rows.length === 0 ? (
@@ -638,7 +620,7 @@ function RequestLog({ requests, total, loading, error, onRefresh }) {
           </div>
         )}
       </Card>
-    </>
+    </div>
   );
 }
 
@@ -928,14 +910,18 @@ function Dashboard({
   settingsError,
   onLogout,
 }) {
-  const pageTitle = activeView === 'overview' ? '用量概览' : '代理设置';
-  const pageKicker = activeView === 'overview' ? 'Overview' : 'Configuration';
+  const pageMeta = activeView === 'settings'
+    ? { title: '代理设置', kicker: 'Configuration', hint: '管理密钥、模型与进程维护' }
+    : activeView === 'logs'
+      ? { title: '调用日志', kicker: 'Request log', hint: '每 20 秒自动刷新日志' }
+      : { title: '用量概览', kicker: 'Overview', hint: '每分钟自动刷新用量' };
   return (
-    <div className="app-shell">
+    <div className={cn('app-shell', activeView === 'logs' && 'app-shell-logs')}>
       <main className="main-shell">
         <header className="topbar">
           <div className="topbar-switcher" role="navigation" aria-label="页面切换">
             <button type="button" className={cn(activeView === 'overview' && 'topbar-switch-active')} onClick={() => setActiveView('overview')}>用量概览</button>
+            <button type="button" className={cn(activeView === 'logs' && 'topbar-switch-active')} onClick={() => setActiveView('logs')}>调用日志</button>
             <button type="button" className={cn(activeView === 'settings' && 'topbar-switch-active')} onClick={() => setActiveView('settings')}>代理设置</button>
           </div>
           <div className="topbar-actions">
@@ -944,7 +930,20 @@ function Dashboard({
             <Button type="button" size="icon" variant="ghost" onClick={onLogout} aria-label="退出登录" title="退出登录"><LogOut size={17} /></Button>
           </div>
         </header>
-        <div className="page-heading"><div><div className="page-kicker">{pageKicker}</div><h1>{pageTitle}</h1></div><div className="page-heading-meta"><Activity size={15} /> 每分钟自动刷新用量</div></div>
+        <div className="page-heading">
+          <div><div className="page-kicker">{pageMeta.kicker}</div><h1>{pageMeta.title}</h1></div>
+          <div className="page-heading-actions">
+            <div className="page-heading-meta">
+              <Activity size={15} />
+              {activeView === 'logs' ? `已加载 ${requestsTotal} 条 · 每 20 秒刷新` : pageMeta.hint}
+            </div>
+            {activeView === 'logs' && (
+              <Button type="button" size="sm" variant="secondary" onClick={onRefreshRequests} disabled={requestsLoading}>
+                <RefreshCw size={14} className={requestsLoading ? 'spin' : ''} /> 刷新日志
+              </Button>
+            )}
+          </div>
+        </div>
         {activeView === 'settings' ? (
           <Settings
             config={config}
@@ -972,6 +971,11 @@ function Dashboard({
             actionMessage={actionMessage}
             error={settingsError}
           />
+        ) : activeView === 'logs' ? (
+          <RequestLogPage
+            requests={requests}
+            error={requestsError}
+          />
         ) : (
           <Overview
             config={config}
@@ -981,11 +985,6 @@ function Dashboard({
             onActivateAccount={onActivateAccount}
             onDeleteAccount={onDeleteAccount}
             onRefreshAccounts={onRefreshAccounts}
-            requests={requests}
-            requestsTotal={requestsTotal}
-            requestsLoading={requestsLoading}
-            requestsError={requestsError}
-            onRefreshRequests={onRefreshRequests}
             refreshing={refreshing}
             authSession={authSession}
             onOpenAuth={onOpenAuth}
@@ -1178,7 +1177,7 @@ function App() {
     requestsRefreshingRef.current = true;
     if (!silent) setRequestsLoading(true);
     try {
-      const data = await request('/requests?limit=20');
+      const data = await request('/requests?limit=50');
       setRequests(Array.isArray(data.requests) ? data.requests : []);
       setRequestsTotal(Number(data.total) || 0);
       setRequestsError('');
@@ -1231,9 +1230,10 @@ function App() {
     return () => window.clearInterval(timer);
   }, [phase, hydrateDashboard, loadUsage]);
 
-  // 调用日志比用量更新更频繁：只在概览页每 20 秒静默拉取一次。
+  // 调用日志页每 20 秒刷新；切到该标签页时立即拉一次。
   useEffect(() => {
-    if (phase !== 'ready' || activeView !== 'overview') return undefined;
+    if (phase !== 'ready' || activeView !== 'logs') return undefined;
+    loadRequests(true);
     const timer = window.setInterval(() => { loadRequests(true); }, 20_000);
     return () => window.clearInterval(timer);
   }, [phase, activeView, loadRequests]);
