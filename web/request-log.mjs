@@ -52,6 +52,7 @@ function buildBaseEntry(context, startedAt) {
   return {
     at: new Date(startedAt).toISOString(),
     model: String(context.model ?? ''),
+    endpoint: String(context.endpoint ?? '') || null,
     reasoningEffort: context.reasoningEffort ?? null,
     accountApiKey: String(context.accountApiKey ?? ''),
     maskedToken: maskApiKey(context.presentedKey),

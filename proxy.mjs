@@ -1635,7 +1635,7 @@ function upstreamFetch(urlStr, options) {
 
 // ── 流式转发 ────────────────────────────────────────
 
-async function forwardToCC(body, apiKey, incomingHeaders = {}, signal, promptCacheKey) {
+async function forwardToCC(body, apiKey, incomingHeaders = {}, signal, promptCacheKey, endpoint = '') {
   const startedAt = Date.now();
   const url = `${CFG.apiBase}/alpha/generate`;
   const traceparent = generateTraceparent();
@@ -1672,6 +1672,7 @@ async function forwardToCC(body, apiKey, incomingHeaders = {}, signal, promptCac
     reasoningEffort: body?.params?.reasoning_effort ?? null,
     presentedKey: getPresentedApiKey(incomingHeaders),
     accountApiKey: apiKey,
+    endpoint,
     startedAt,
   };
 
@@ -1821,7 +1822,7 @@ async function handleChatCompletions(req, res) {
     // 首次初始化（fingerprint + lifecycle）
     await ensureInitialized(apiKey, abortController.signal);
     // 转发到 CC API（传入客户端 headers，用于提取 session ID）
-    const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, promptCacheKey);
+    const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, promptCacheKey, 'chat');
 
     if (!ccResponse.ok) {
       const errorText = await ccResponse.text().catch(() => '');
@@ -2773,7 +2774,7 @@ async function handleMessages(req, res) {
   try {
     // 首次初始化（fingerprint + lifecycle）
     await ensureInitialized(apiKey, abortController.signal);
-    const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal);
+    const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, undefined, 'anthropic');
 
     if (!ccResponse.ok) {
       const errorText = await ccResponse.text().catch(() => '');
@@ -3794,7 +3795,7 @@ async function handleResponses(req, res) {
 
   try {
     await ensureInitialized(apiKey, abortController.signal);
-    const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, promptCacheKey);
+    const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, promptCacheKey, 'responses');
 
     if (!ccResponse.ok) {
       const errorText = await ccResponse.text().catch(() => '');

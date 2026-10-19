@@ -503,6 +503,14 @@ function effortAppearance(effort) {
   return { label: value, variant: 'neutral' };
 }
 
+function endpointLabel(endpoint) {
+  const value = String(endpoint ?? '').trim().toLowerCase();
+  if (value === 'chat') return 'Chat';
+  if (value === 'responses' || value === 'response') return 'Responses';
+  if (value === 'anthropic' || value === 'messages') return 'Anthropic';
+  return '';
+}
+
 function RequestLogPage({ requests, error }) {
   const [expandedId, setExpandedId] = useState('');
   const rows = (Array.isArray(requests) ? requests : []).slice(0, 50);
@@ -529,6 +537,7 @@ function RequestLogPage({ requests, error }) {
                   <th>输入 / 缓存</th>
                   <th>输出（推理 / 正文）</th>
                   <th>速度 / 首字</th>
+                  <th>端点</th>
                   <th>令牌 / 账号</th>
                   <th>状态</th>
                 </tr>
@@ -539,6 +548,7 @@ function RequestLogPage({ requests, error }) {
                   const rate = cacheHitRate(row);
                   const failed = row.status === 'error';
                   const effort = effortAppearance(row.reasoningEffort);
+                  const endpoint = endpointLabel(row.endpoint);
                   const speed = row.speed === null || row.speed === undefined ? '—' : `${Number(row.speed).toFixed(1)} tok/s`;
                   return (
                     <React.Fragment key={row.id}>
@@ -585,6 +595,11 @@ function RequestLogPage({ requests, error }) {
                           <span className="log-sub">首字 {formatLogTtft(row.ttftMs)}</span>
                         </td>
                         <td>
+                          {endpoint
+                            ? <Badge variant="neutral" className="log-endpoint">{endpoint}</Badge>
+                            : <span className="log-muted-value">—</span>}
+                        </td>
+                        <td>
                           <code className="log-token">{row.maskedToken || '—'}</code>
                           <span className="log-account" title={row.accountName}>{row.accountName || '未知账号'}</span>
                         </td>
@@ -607,7 +622,7 @@ function RequestLogPage({ requests, error }) {
                       </tr>
                       {expanded && failed && (
                         <tr className="log-detail-row">
-                          <td colSpan={8}>
+                          <td colSpan={9}>
                             <div className="log-detail">
                               <div className="log-detail-head">
                                 <CircleAlert size={14} />

@@ -915,6 +915,7 @@ export function createAdminController({
       id: `req-${randomBytes(8).toString('hex')}`,
       at: text(entry.at) || new Date().toISOString(),
       model: text(entry.model) || '未知模型',
+      endpoint: text(entry.endpoint) || null,
       reasoningEffort: text(entry.reasoningEffort) || null,
       effectiveEffort: text(entry.effectiveEffort) || null,
       provider: text(entry.provider) || null,
