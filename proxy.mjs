@@ -4107,8 +4107,16 @@ const server = http.createServer(async (req, res) => {
   const host = req.headers.host || 'localhost';
   const url = new URL(req.url, `http://${host}`);
 
-  // 在途上限准入。/health 与 / 例外：探活与编排器不该因业务繁忙而收 503。
-  const isLiveness = url.pathname === '/health' || url.pathname === '/';
+  // 在途上限准入。控制台页面/管理接口与 /health 不该因业务繁忙而收 503。
+  const livenessPath = url.pathname;
+  const isLiveness = livenessPath === '/health'
+    || livenessPath === '/'
+    || livenessPath === '/log'
+    || livenessPath === '/set'
+    || livenessPath === '/callback'
+    || livenessPath.startsWith('/assets/')
+    || livenessPath.startsWith('/console')
+    || livenessPath.startsWith('/admin');
   if (!isLiveness && MAX_INFLIGHT > 0) {
     if (inflightCount >= MAX_INFLIGHT) {
       log('warn', 'In-flight limit reached, rejecting request', {
@@ -4143,7 +4151,7 @@ const server = http.createServer(async (req, res) => {
       await handleResponses(req, res);
     } else if (url.pathname === '/v1/models' && req.method === 'GET') {
       await handleModels(req, res);
-    } else if (url.pathname === '/health' || url.pathname === '/') {
+    } else if (url.pathname === '/health') {
       handleHealth(req, res);
     } else {
       sendJSON(res, 404, { error: { message: 'Not found', type: 'not_found' } });
@@ -4189,12 +4197,18 @@ async function restartServer() {
   });
 }
 
-async function runMaintenanceCommand(command, args) {
+const UPDATE_BRANCH = 'main';
+const UPDATE_REMOTE_PATTERN = /github\.com[:/]1deaaa\/cmdgo2api(?:\.git)?\/?$/i;
+const NPM_COMMAND = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+async function runMaintenanceCommand(command, args, options = {}) {
   try {
     return await execFileAsync(command, args, {
       cwd: __dirname,
-      maxBuffer: 2 * 1024 * 1024,
-      timeout: 120_000,
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 300_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      ...options,
     });
   } catch (error) {
     const detail = String(error.stderr || error.stdout || error.message || '未知错误')
@@ -4209,6 +4223,30 @@ async function runMaintenanceCommand(command, args) {
   }
 }
 
+// 找到指向 1deaaa/cmdgo2api 的 remote，避免误从 fork 或私有镜像更新。
+async function resolveUpdateRemote() {
+  const { stdout } = await runMaintenanceCommand('git', ['remote', '-v']);
+  const remotes = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const [name, url, kind] = line.trim().split(/\s+/);
+    if (!name || !url || kind !== '(fetch)' || remotes.some((item) => item.name === name)) continue;
+    if (UPDATE_REMOTE_PATTERN.test(url.replace(/\/+$/, ''))) remotes.push({ name, url });
+  }
+  if (remotes.length === 0) {
+    const error = new Error('未找到指向 1deaaa/cmdgo2api 的 git remote，已停止更新。');
+    error.status = 409;
+    throw error;
+  }
+  return (remotes.find((item) => item.name === 'origin') || remotes[0]).name;
+}
+
+async function runControlPanelBuild() {
+  await runMaintenanceCommand(NPM_COMMAND, ['run', 'build'], {
+    // Windows 下 npm 是 .cmd，必须通过 shell 才能由 execFile 启动。
+    shell: process.platform === 'win32',
+  });
+}
+
 async function updateProject() {
   const status = await runMaintenanceCommand('git', ['status', '--porcelain', '--untracked-files=all']);
   if (status.stdout.trim()) {
@@ -4216,9 +4254,56 @@ async function updateProject() {
     error.status = 409;
     throw error;
   }
-  await runMaintenanceCommand('git', ['pull', '--ff-only']);
-  await runMaintenanceCommand('npm', ['run', 'build']);
-  return { message: '项目已更新，正在重启代理服务' };
+
+  const branch = (await runMaintenanceCommand('git', ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+  if (branch !== UPDATE_BRANCH) {
+    const error = new Error(`当前分支为 ${branch}，软件维护仅支持 ${UPDATE_BRANCH} 分支。`);
+    error.status = 409;
+    throw error;
+  }
+
+  const remote = await resolveUpdateRemote();
+  const before = (await runMaintenanceCommand('git', ['rev-parse', 'HEAD'])).stdout.trim();
+  await runMaintenanceCommand('git', ['fetch', '--prune', remote, UPDATE_BRANCH]);
+  const target = (await runMaintenanceCommand('git', ['rev-parse', 'FETCH_HEAD'])).stdout.trim();
+
+  if (before !== target) {
+    try {
+      await runMaintenanceCommand('git', ['merge', '--ff-only', 'FETCH_HEAD']);
+    } catch {
+      // 本地有分叉提交时允许自动 merge；只有出现冲突才回滚并报错。
+      try {
+        await runMaintenanceCommand('git', ['merge', '--no-edit', 'FETCH_HEAD']);
+      } catch (mergeError) {
+        try {
+          await runMaintenanceCommand('git', ['merge', '--abort']);
+        } catch {
+          // 没有处于合并状态时 --abort 会失败，忽略即可
+        }
+        const error = new Error(`从 ${remote}/${UPDATE_BRANCH} 合并更新时出现冲突，已自动回滚；请手动处理后再试。${mergeError.message}`);
+        error.status = 409;
+        throw error;
+      }
+    }
+  }
+
+  const after = (await runMaintenanceCommand('git', ['rev-parse', 'HEAD'])).stdout.trim();
+  await runControlPanelBuild();
+
+  if (before === after) {
+    return {
+      message: `已包含 ${remote}/${UPDATE_BRANCH} 最新提交（${after.slice(0, 7)}），已重新构建控制台，正在重启代理服务`,
+      updated: false,
+      commit: after.slice(0, 7),
+      remote,
+    };
+  }
+  return {
+    message: `已从 ${remote}/${UPDATE_BRANCH} 更新 ${before.slice(0, 7)} → ${after.slice(0, 7)}，正在重新构建并重启代理服务`,
+    updated: true,
+    commit: after.slice(0, 7),
+    remote,
+  };
 }
 
 async function relaunchProcess() {

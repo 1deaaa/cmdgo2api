@@ -39,6 +39,13 @@ import './styles.css';
 
 const API_ROOT = '/admin/api';
 
+function viewFromPath(pathname) {
+  const path = String(pathname || '/').replace(/\/+$/, '') || '/';
+  if (path === '/log') return 'logs';
+  if (path === '/set') return 'settings';
+  return 'overview';
+}
+
 class RequestError extends Error {
   constructor(message, status) {
     super(message);
@@ -752,9 +759,23 @@ function Settings({
 
   return (
     <div className="page-body settings-body">
-      <SectionHeading eyebrow="Configuration" title="代理设置" description="访问控制、模型权限与运行维护" />
+      <SectionHeading eyebrow="Configuration" title="访问权限" description="访问控制、模型权限与运行维护" />
       {error && <Notice>{error}</Notice>}
       {actionMessage && <Notice type="success">{actionMessage}</Notice>}
+      <ModelManager
+        models={models}
+        selectedIds={selectedModelIds}
+        onToggle={onToggleModel}
+        onSelectAll={onSelectAllModels}
+        onClear={onClearModels}
+        onSave={onSaveModels}
+        onRefresh={onRefreshModels}
+        loading={modelsLoading}
+        saving={modelsSaving}
+        dirty={modelsDirty}
+        fetchedAt={modelsFetchedAt}
+        error={modelsError}
+      />
       <div className="settings-grid">
         <Card className="keys-card">
           <CardHeader>
@@ -803,7 +824,7 @@ function Settings({
           </CardHeader>
           <CardContent className="endpoint-content">
             <InfoRow label="OpenAI 兼容端点" value={endpoint} copy />
-            <InfoRow label="管理控制台" value={`${origin || endpoint.replace(/\/v1$/, '')}/console`} copy />
+            <InfoRow label="管理控制台" value={`${origin || endpoint.replace(/\/v1$/, '')}/`} copy />
             <InfoRow label="上游账号 token" value={config?.hasUpstreamToken ? '已加载' : '未加载'} valueTone={config?.hasUpstreamToken ? 'positive' : 'muted'} />
             <Separator className="endpoint-separator" />
             <Button variant="secondary" onClick={onRestart} disabled={restarting} className="restart-button">
@@ -820,20 +841,6 @@ function Settings({
         </Card>
 
       </div>
-      <ModelManager
-        models={models}
-        selectedIds={selectedModelIds}
-        onToggle={onToggleModel}
-        onSelectAll={onSelectAllModels}
-        onClear={onClearModels}
-        onSave={onSaveModels}
-        onRefresh={onRefreshModels}
-        loading={modelsLoading}
-        saving={modelsSaving}
-        dirty={modelsDirty}
-        fetchedAt={modelsFetchedAt}
-        error={modelsError}
-      />
     </div>
   );
 }
@@ -1007,7 +1014,7 @@ function Dashboard({
 function App() {
   const [phase, setPhase] = useState('loading');
   const [authState, setAuthState] = useState(null);
-  const [activeView, setActiveView] = useState('overview');
+  const [activeView, setActiveView] = useState(() => viewFromPath(window.location.pathname));
   const [config, setConfig] = useState(null);
   const [status, setStatus] = useState(null);
   const [usage, setUsage] = useState(null);
@@ -1048,6 +1055,21 @@ function App() {
   const configRef = useRef(null);
 
   configRef.current = config;
+
+  // 标签页与 URL 同步：/ 用量概览，/log 调用日志，/set 代理设置。
+  const changeView = useCallback((view) => {
+    setActiveView(view);
+    const path = view === 'logs' ? '/log' : view === 'settings' ? '/set' : '/';
+    if (window.location.pathname !== path) {
+      window.history.pushState({ view }, '', path);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => setActiveView(viewFromPath(window.location.pathname));
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   const stopAuthPolling = useCallback(() => {
     if (authPollRef.current) window.clearInterval(authPollRef.current);
@@ -1579,7 +1601,7 @@ function App() {
   return (
     <Dashboard
       activeView={activeView}
-      setActiveView={setActiveView}
+      setActiveView={changeView}
       config={config}
       status={status}
       usage={usage}

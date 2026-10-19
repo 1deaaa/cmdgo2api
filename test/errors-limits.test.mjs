@@ -134,7 +134,7 @@ test('CC_MAX_INFLIGHT 不限制探活端点', async () => {
     const first = s.proxy.post('/v1/chat/completions', CHAT, AUTH);
     await new Promise(r => setTimeout(r, 400));
     // 探活端点被占满时仍必须可用，否则编排系统会误判容器已死
-    for (const path of ['/health', '/']) {
+    for (const path of ['/health']) {
       const r = await s.proxy.get(path);
       assert.equal(r.status, 200, path + ' 不应受在途上限影响');
     }

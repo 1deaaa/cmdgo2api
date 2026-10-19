@@ -75,13 +75,11 @@ test('GET /v1/models 走 /provider/v1/models', async () => {
   } finally { await s.close(); }
 });
 
-test('GET /health 与 / 返回存活状态', async () => {
+test('GET /health 返回存活状态', async () => {
   const s = await setup();
   try {
-    for (const path of ['/health', '/']) {
-      const r = await s.proxy.get(path);
-      assert.equal(r.status, 200, path + ' 应返回 200');
-    }
+    const r = await s.proxy.get('/health');
+    assert.equal(r.status, 200, '/health 应返回 200');
   } finally { await s.close(); }
 });
 

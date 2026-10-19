@@ -722,7 +722,8 @@ function maskedKey(value) {
 }
 
 function safeFilePath(root, requestPath) {
-  const relativePath = requestPath.replace(/^\/console\/?/, '') || 'index.html';
+  // 兼容旧的 /console 前缀；新路由直接以 / 为根（/assets/...、/favicon.svg）。
+  const relativePath = requestPath.replace(/^\/console(?=\/|$)/, '').replace(/^\/+/, '') || 'index.html';
   const candidate = resolve(root, relativePath);
   const relativeCandidate = relative(root, candidate);
   if (relativeCandidate.startsWith('..') || relativeCandidate.includes(`..${'/'}`)) return null;
@@ -1810,25 +1811,37 @@ export function createAdminController({
 
   return {
     async handle(request, response, url) {
-      const isConsole = url.pathname === '/console' || url.pathname.startsWith('/console/');
-      const isAdmin = url.pathname === '/admin' || url.pathname.startsWith('/admin/');
-      const isCallback = url.pathname === '/callback';
-      if (!isConsole && !isAdmin && !isCallback) return false;
-      if (isCallback || url.pathname === '/admin/auth/callback') {
+      const path = url.pathname;
+      const isAdmin = path === '/admin' || path.startsWith('/admin/');
+      const isCallback = path === '/callback' || path === '/admin/auth/callback';
+      const isConsoleAlias = path === '/console' || path === '/console/';
+      const isAppPage = path === '/' || path === '/log' || path === '/log/'
+        || path === '/set' || path === '/set/';
+      const isAsset = path.startsWith('/assets/') || path.startsWith('/console/assets/');
+      const isFavicon = path === '/favicon.svg' || path === '/console/favicon.svg';
+      const isLegacyConsole = path.startsWith('/console/');
+      if (!isAdmin && !isCallback && !isConsoleAlias && !isAppPage && !isAsset && !isFavicon) return false;
+      if (isCallback) {
         if (!['GET', 'POST'].includes(request.method)) {
           sendText(response, 405, '仅支持 GET 或 POST');
           return true;
         }
         return handleCallback(request, response, url);
       }
-      if (url.pathname.startsWith('/admin/api/')) return handleApi(request, response, url);
-      if (url.pathname === '/console' || url.pathname === '/console/') {
-        return handleStatic(request, response, new URL('/console/index.html', url));
+      if (path.startsWith('/admin/api/')) return handleApi(request, response, url);
+      if (isConsoleAlias) {
+        // 旧的 /console 地址保留为跳转，新的控制台入口是站点根路径。
+        response.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+        response.end();
+        return true;
       }
-      if (url.pathname.startsWith('/console/assets/') || url.pathname === '/console/favicon.svg') {
-        return handleStatic(request, response, url);
+      if (isAppPage) return handleStatic(request, response, new URL('/index.html', url));
+      if (isAsset || isFavicon) return handleStatic(request, response, url);
+      if (isLegacyConsole) {
+        sendText(response, 404, '控制台页面不存在');
+        return true;
       }
-      sendText(response, 404, '控制台页面不存在');
+      sendText(response, 404, '管理接口不存在');
       return true;
     },
     handleUpstreamQuotaLimit,
