@@ -1075,6 +1075,29 @@ export function createAdminController({
     return Boolean(account && !account.usageError && usageHasAvailableQuotas(account.usage));
   }
 
+  // 并发刷新一批账号的用量，并把结果写回账号存储。
+  // 切号前的候选刷新与“刷新全部”共用这一段，避免两套逻辑漂移。
+  async function refreshAccountUsages(accounts) {
+    const snapshot = accounts.slice();
+    const results = await Promise.all(snapshot.map(async (account) => {
+      try {
+        const usage = await readUsage(config, account.apiKey);
+        return { account: mergeAccountUsage(account, usage), refreshed: true };
+      } catch (error) {
+        return {
+          account: { ...account, usageError: error instanceof AdminError ? error.message : '用量同步失败' },
+          refreshed: false,
+        };
+      }
+    }));
+    const updates = new Map(results.map((result) => [result.account.id, result.account]));
+    accountStore = persistAccounts({
+      ...accountStore,
+      accounts: accountStore.accounts.map((account) => updates.get(account.id) || account),
+    });
+    return results;
+  }
+
   function nextAvailableAccount(accountId) {
     const currentIndex = accountStore.accounts.findIndex((account) => account.id === accountId);
     if (currentIndex < 0) return null;
@@ -1085,13 +1108,21 @@ export function createAdminController({
     return null;
   }
 
-  function autoSwitchExhaustedAccount(accountId) {
-    const current = findAccount(accountId);
-    if (!current || accountStore.activeAccountId !== accountId || !usageHasExhaustedQuota(current.usage)) {
-      return { switched: false, account: activeAccount() };
+  let switchInFlight = null;
+
+  async function performAutoSwitch(accountId, { candidatesFresh = false } = {}) {
+    // 切号前先刷新候选账号：本地快照里的 expired / usageError 可能已经过期。
+    // “刷新全部”刚刚刷新过所有账号时传 candidatesFresh，避免重复请求。
+    const candidates = accountStore.accounts.filter((account) => account.id !== accountId);
+    if (!candidatesFresh && candidates.length > 0) {
+      await refreshAccountUsages(candidates);
+    }
+    // 等待网络期间可能已被别的请求切走，避免覆盖新的 activeAccountId。
+    if (accountStore.activeAccountId !== accountId) {
+      return { switched: false, account: activeAccount(), stale: true };
     }
     const next = nextAvailableAccount(accountId);
-    if (!next) return { switched: false, account: current };
+    if (!next) return { switched: false, account: findAccount(accountId) || activeAccount() };
     activateStoredAccount(next.id);
     return {
       switched: true,
@@ -1100,9 +1131,31 @@ export function createAdminController({
     };
   }
 
+  async function autoSwitchExhaustedAccount(accountId, options = {}) {
+    const current = findAccount(accountId);
+    if (!current || accountStore.activeAccountId !== accountId || !usageHasExhaustedQuota(current.usage)) {
+      return { switched: false, account: activeAccount() };
+    }
+    // 同一次失败请求可能并发触发多个限额事件：等待正在进行的切号，避免重复刷新候选。
+    if (switchInFlight) {
+      try {
+        await switchInFlight;
+      } catch {
+        // 前一个切号任务的错误由它自己的调用方处理
+      }
+      return { switched: false, account: activeAccount(), joined: true };
+    }
+    switchInFlight = performAutoSwitch(accountId, options);
+    try {
+      return await switchInFlight;
+    } finally {
+      switchInFlight = null;
+    }
+  }
+
   // 上游请求过程中命中额度窗口限制时，立即把当前账号标记为耗尽并切换，
   // 不再等待控制台 60 秒一次的用量轮询。
-  function handleUpstreamQuotaLimit(info) {
+  async function handleUpstreamQuotaLimit(info) {
     const limit = parseUpstreamQuotaLimit(info || {});
     if (!limit) return { detected: false, switched: false };
     const current = activeAccount();
@@ -1112,7 +1165,7 @@ export function createAdminController({
       return { detected: true, switched: false, stale: true, window: limit.window, resetAt: limit.resetAtMs };
     }
     markQuotaExhausted(current.id, limit.window);
-    const switchResult = autoSwitchExhaustedAccount(current.id);
+    const switchResult = await autoSwitchExhaustedAccount(current.id);
     return { detected: true, window: limit.window, resetAt: limit.resetAtMs, ...switchResult };
   }
 
@@ -1452,24 +1505,11 @@ export function createAdminController({
       try {
         if (accountStore.accounts.length === 0) throw new AdminError('还没有保存的 Command Code 账号', 400);
         const activeAccountId = accountStore.activeAccountId;
-        const results = await Promise.all(accountStore.accounts.map(async (account) => {
-          try {
-            const usage = await readUsage(config, account.apiKey);
-            return {
-              account: mergeAccountUsage(account, usage),
-              refreshed: true,
-            };
-          } catch (error) {
-            return {
-              account: { ...account, usageError: error instanceof AdminError ? error.message : '用量同步失败' },
-              refreshed: false,
-            };
-          }
-        }));
-        accountStore = persistAccounts({ ...accountStore, accounts: results.map((result) => result.account) });
+        const results = await refreshAccountUsages(accountStore.accounts);
         const activeWasRefreshed = results.some((result) => result.refreshed && result.account.id === activeAccountId);
+        // 这里刚刷新过所有账号，切号时不再重复刷新候选。
         const switchResult = activeWasRefreshed
-          ? autoSwitchExhaustedAccount(activeAccountId)
+          ? await autoSwitchExhaustedAccount(activeAccountId, { candidatesFresh: true })
           : { switched: false, account: activeAccount() };
         sendJson(response, 200, {
           ok: true,
@@ -1554,7 +1594,7 @@ export function createAdminController({
         requestedAccountId = account.id;
         const usage = await readUsage(config, account.apiKey);
         updateAccount(requestedAccountId, (current) => mergeAccountUsage(current, usage));
-        const switchResult = autoSwitchExhaustedAccount(requestedAccountId);
+        const switchResult = await autoSwitchExhaustedAccount(requestedAccountId);
         const selected = switchResult.account || activeAccount();
         sendJson(response, 200, {
           ok: true,

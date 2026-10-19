@@ -1146,6 +1146,33 @@ function App() {
     }
   }, [handleAuthError]);
 
+  const applyAccountPayload = useCallback((data) => {
+    const nextAccounts = data.accounts || [];
+    const nextActive = nextAccounts.find((account) => account.id === data.activeAccountId) || null;
+    setConfig((current) => ({
+      ...(current || {}),
+      accounts: nextAccounts,
+      activeAccountId: data.activeAccountId || null,
+      account: nextActive,
+      hasUpstreamToken: Boolean(nextActive),
+    }));
+    setUsage(nextActive?.usage || null);
+    return nextActive;
+  }, []);
+
+  // 刷新全部账号用量：打开页面和手动“刷新全部”共用同一个入口。
+  const syncAllAccounts = useCallback(async ({ silent = false } = {}) => {
+    try {
+      const data = await request('/accounts/refresh', { method: 'POST', body: '{}' });
+      applyAccountPayload(data);
+      return data;
+    } catch (caught) {
+      if (handleAuthError(caught)) return null;
+      if (!silent) throw caught;
+      return null;
+    }
+  }, [applyAccountPayload, handleAuthError]);
+
   const loadRequests = useCallback(async (silent = false) => {
     if (silent && requestsRefreshingRef.current) return;
     requestsRefreshingRef.current = true;
@@ -1183,13 +1210,17 @@ function App() {
     setDashboardLoading(true);
     try {
       const [configData] = await Promise.all([loadConfig(), loadStatus()]);
-      await Promise.all([loadUsage(configData.hasUpstreamToken, true), loadModels(false), loadRequests(true)]);
+      // 每次打开页面先把所有账号的额度同步一遍；失败时退回只刷新当前账号。
+      const hasAccounts = (configData.accounts || []).length > 0;
+      const synced = hasAccounts ? await syncAllAccounts({ silent: true }) : null;
+      if (!synced) await loadUsage(configData.hasUpstreamToken, true);
+      await Promise.all([loadModels(false), loadRequests(true)]);
     } catch (caught) {
       if (!handleAuthError(caught)) setError(caught.message);
     } finally {
       setDashboardLoading(false);
     }
-  }, [handleAuthError, loadConfig, loadModels, loadStatus, loadUsage, loadRequests]);
+  }, [handleAuthError, loadConfig, loadModels, loadStatus, loadUsage, loadRequests, syncAllAccounts]);
 
   useEffect(() => {
     if (phase !== 'ready') return undefined;
@@ -1486,20 +1517,6 @@ function App() {
 
   const refreshUsage = useCallback(() => loadUsage(Boolean(configRef.current?.hasUpstreamToken), false), [loadUsage]);
 
-  const applyAccountPayload = useCallback((data) => {
-    const nextAccounts = data.accounts || [];
-    const nextActive = nextAccounts.find((account) => account.id === data.activeAccountId) || null;
-    setConfig((current) => ({
-      ...(current || {}),
-      accounts: nextAccounts,
-      activeAccountId: data.activeAccountId || null,
-      account: nextActive,
-      hasUpstreamToken: Boolean(nextActive),
-    }));
-    setUsage(nextActive?.usage || null);
-    return nextActive;
-  }, []);
-
   const activateAccount = useCallback(async (accountId) => {
     setError('');
     setRefreshing(true);
@@ -1520,8 +1537,8 @@ function App() {
     setError('');
     setRefreshing(true);
     try {
-      const data = await request('/accounts/refresh', { method: 'POST', body: '{}' });
-      applyAccountPayload(data);
+      const data = await syncAllAccounts();
+      if (!data) return;
       const failed = (data.accounts || []).filter((account) => account.usageError).length;
       setActionMessage(data.autoSwitched
         ? '当前账号额度已用尽，已自动切换到可用账号。'
@@ -1532,7 +1549,7 @@ function App() {
     } finally {
       setRefreshing(false);
     }
-  }, [applyAccountPayload, handleAuthError]);
+  }, [handleAuthError, syncAllAccounts]);
 
   const deleteAccount = useCallback(async (account) => {
     const displayName = account.userName || account.email || '这个账号';

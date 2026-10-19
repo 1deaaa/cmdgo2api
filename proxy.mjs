@@ -1220,17 +1220,27 @@ let upstreamQuotaLimitHandler = null;
 // 调用日志钩子：同样由控制器注册；日志采集失败不影响代理请求。
 let requestLogHandler = null;
 
+function logQuotaSwitch(result) {
+  if (!result?.switched) return;
+  log('info', 'Upstream quota limit reached, switched active account', {
+    window: result.window,
+    previousAccountId: result.previousAccountId,
+    accountId: result.account?.id,
+  });
+}
+
 function reportUpstreamQuotaLimit(info) {
   if (typeof upstreamQuotaLimitHandler !== 'function') return;
   try {
     const result = upstreamQuotaLimitHandler(info);
-    if (result?.switched) {
-      log('info', 'Upstream quota limit reached, switched active account', {
-        window: result.window,
-        previousAccountId: result.previousAccountId,
-        accountId: result.account?.id,
+    // 切号前要刷新候选账号用量，控制器因此返回 Promise；不阻塞当前错误响应。
+    if (result && typeof result.then === 'function') {
+      result.then(logQuotaSwitch).catch((error) => {
+        log('warn', 'Upstream quota limit auto-switch failed', { message: error?.message || String(error) });
       });
+      return;
     }
+    logQuotaSwitch(result);
   } catch (error) {
     log('warn', 'Upstream quota limit auto-switch failed', { message: error?.message || String(error) });
   }
