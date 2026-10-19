@@ -26,6 +26,7 @@ import {
   resolveAnthropicEffort,
 } from './reasoning.mjs';
 import { buildUpstreamFailureEntry, instrumentUpstreamResponse } from './web/request-log.mjs';
+import { createUpdateChecker, detectProcessSupervisor } from './web/update-check.mjs';
 
 // ── 配置加载 ──────────────────────────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -4236,22 +4237,12 @@ async function runMaintenanceCommand(command, args, options = {}) {
   }
 }
 
-// 找到指向 1deaaa/cmdgo2api 的 remote，避免误从 fork 或私有镜像更新。
-async function resolveUpdateRemote() {
-  const { stdout } = await runMaintenanceCommand('git', ['remote', '-v']);
-  const remotes = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const [name, url, kind] = line.trim().split(/\s+/);
-    if (!name || !url || kind !== '(fetch)' || remotes.some((item) => item.name === name)) continue;
-    if (UPDATE_REMOTE_PATTERN.test(url.replace(/\/+$/, ''))) remotes.push({ name, url });
-  }
-  if (remotes.length === 0) {
-    const error = new Error('未找到指向 1deaaa/cmdgo2api 的 git remote，已停止更新。');
-    error.status = 409;
-    throw error;
-  }
-  return (remotes.find((item) => item.name === 'origin') || remotes[0]).name;
-}
+// 更新检查：带 TTL 缓存与并发去重，避免控制台每次进入设置页都执行 git fetch。
+const updateChecker = createUpdateChecker({
+  runGit: async (args) => (await runMaintenanceCommand('git', args)).stdout,
+  branch: UPDATE_BRANCH,
+  remotePattern: UPDATE_REMOTE_PATTERN,
+});
 
 async function runControlPanelBuild() {
   await runMaintenanceCommand(NPM_COMMAND, ['run', 'build'], {
@@ -4261,58 +4252,61 @@ async function runControlPanelBuild() {
 }
 
 async function updateProject() {
-  const status = await runMaintenanceCommand('git', ['status', '--porcelain', '--untracked-files=all']);
-  if (status.stdout.trim()) {
+  // inspect() 会校验分支与 remote 并 fetch 最新提交；失败时抛出带 status 的错误。
+  const info = await updateChecker.inspect();
+  if (info.dirty) {
     const error = new Error('项目存在未提交改动，已停止更新以保护本地修改；请先提交或整理工作树。');
     error.status = 409;
     throw error;
   }
 
-  const branch = (await runMaintenanceCommand('git', ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
-  if (branch !== UPDATE_BRANCH) {
-    const error = new Error(`当前分支为 ${branch}，软件维护仅支持 ${UPDATE_BRANCH} 分支。`);
-    error.status = 409;
-    throw error;
+  const { remote, current, latest } = info;
+  if (!info.updateAvailable) {
+    // 没有新提交时只回传状态，不构建、不重启。
+    // 旧实现无论是否更新都会重建并 relaunch，在 systemd 下会把服务直接停掉。
+    updateChecker.record(info);
+    return {
+      updated: false,
+      commit: current.slice(0, 7),
+      remote,
+      message: `已包含 ${remote}/${UPDATE_BRANCH} 最新提交（${current.slice(0, 7)}），未触发重启`,
+    };
   }
 
-  const remote = await resolveUpdateRemote();
-  const before = (await runMaintenanceCommand('git', ['rev-parse', 'HEAD'])).stdout.trim();
-  await runMaintenanceCommand('git', ['fetch', '--prune', remote, UPDATE_BRANCH]);
-  const target = (await runMaintenanceCommand('git', ['rev-parse', 'FETCH_HEAD'])).stdout.trim();
-
-  if (before !== target) {
+  try {
+    await runMaintenanceCommand('git', ['merge', '--ff-only', latest]);
+  } catch {
+    // 本地有分叉提交时允许自动 merge；只有出现冲突才回滚并报错。
     try {
-      await runMaintenanceCommand('git', ['merge', '--ff-only', 'FETCH_HEAD']);
-    } catch {
-      // 本地有分叉提交时允许自动 merge；只有出现冲突才回滚并报错。
+      await runMaintenanceCommand('git', ['merge', '--no-edit', latest]);
+    } catch (mergeError) {
       try {
-        await runMaintenanceCommand('git', ['merge', '--no-edit', 'FETCH_HEAD']);
-      } catch (mergeError) {
-        try {
-          await runMaintenanceCommand('git', ['merge', '--abort']);
-        } catch {
-          // 没有处于合并状态时 --abort 会失败，忽略即可
-        }
-        const error = new Error(`从 ${remote}/${UPDATE_BRANCH} 合并更新时出现冲突，已自动回滚；请手动处理后再试。${mergeError.message}`);
-        error.status = 409;
-        throw error;
+        await runMaintenanceCommand('git', ['merge', '--abort']);
+      } catch {
+        // 没有处于合并状态时 --abort 会失败，忽略即可
       }
+      const error = new Error(`从 ${remote}/${UPDATE_BRANCH} 合并更新时出现冲突，已自动回滚；请手动处理后再试。${mergeError.message}`);
+      error.status = 409;
+      throw error;
     }
   }
 
   const after = (await runMaintenanceCommand('git', ['rev-parse', 'HEAD'])).stdout.trim();
   await runControlPanelBuild();
+  updateChecker.record({
+    ...info,
+    current: after,
+    currentShort: after.slice(0, 7),
+    behind: 0,
+    ahead: 0,
+    updateAvailable: false,
+    canUpdate: false,
+    blockedReason: null,
+    checkedAt: new Date().toISOString(),
+  });
 
-  if (before === after) {
-    return {
-      message: `已包含 ${remote}/${UPDATE_BRANCH} 最新提交（${after.slice(0, 7)}），已重新构建控制台，正在重启代理服务`,
-      updated: false,
-      commit: after.slice(0, 7),
-      remote,
-    };
-  }
   return {
-    message: `已从 ${remote}/${UPDATE_BRANCH} 更新 ${before.slice(0, 7)} → ${after.slice(0, 7)}，正在重新构建并重启代理服务`,
+    message: `已从 ${remote}/${UPDATE_BRANCH} 更新 ${current.slice(0, 7)} → ${after.slice(0, 7)}，控制台已重建，正在重启代理服务`,
     updated: true,
     commit: after.slice(0, 7),
     remote,
@@ -4321,6 +4315,14 @@ async function updateProject() {
 
 async function relaunchProcess() {
   await closeServer();
+  if (detectProcessSupervisor() === 'systemd') {
+    // systemd 默认按 control-group 回收进程：这里如果再 spawn 一个“替代进程”，
+    // 它会和当前进程同属一个 cgroup，在主进程退出时被一起杀掉，服务就彻底停摆。
+    // 正确做法是主动以非零状态退出，交给单元里的 Restart=on-failure / always 拉起。
+    log('info', 'CC Proxy exiting for systemd restart', { pid: process.pid });
+    setTimeout(() => process.exit(1), 80);
+    return;
+  }
   const startScript = process.env.COMMANDCODE_PROXY_START_SCRIPT
     || join(homedir(), '.config', 'commandcode-proxy', 'start.sh');
   const gatewayKeys = Array.isArray(CFG.gatewayApiKeys) ? CFG.gatewayApiKeys : [];
@@ -4344,6 +4346,7 @@ const adminController = createAdminController({
   server,
   restart: restartServer,
   update: updateProject,
+  checkUpdate: (options) => updateChecker.status(options),
   relaunch: relaunchProcess,
 });
 upstreamQuotaLimitHandler = (info) => adminController.handleUpstreamQuotaLimit(info);

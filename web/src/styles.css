@@ -510,11 +510,14 @@
 .maintenance-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .maintenance-inline-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .maintenance-inline-copy strong { color: #3f3f46; font-size: 12px; font-weight: 700; }
-.maintenance-inline-copy span { color: #a1a1aa; font-size: 10px; }
+.maintenance-inline-copy span { color: #a1a1aa; font-size: 10px; line-height: 1.5; }
 .maintenance-inline .update-button { width: auto; flex: 0 0 auto; margin-top: 0; }
+.maintenance-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 
 .update-button { margin-top: 17px; background: var(--brand) !important; }
 .update-button:hover { background: #4558d5 !important; }
+.update-button:disabled { background: #c9cde2 !important; cursor: not-allowed; }
+.update-button:disabled:hover { background: #c9cde2 !important; }
 
 .models-card { margin-top: 14px; }
 .models-header { display: flex; align-items: flex-start; justify-content: space-between; }
@@ -645,6 +648,9 @@
   .model-owner { display: none; }
   .model-footer { align-items: stretch; flex-direction: column; }
   .model-footer > button { width: 100%; }
+  .maintenance-inline { align-items: stretch; flex-direction: column; gap: 8px; }
+  .maintenance-actions { width: 100%; }
+  .maintenance-actions .update-button { flex: 1; }
 }
 
 @media (max-width: 490px) {

@@ -9,7 +9,8 @@
 - 技术栈：Node.js（ESM，无打包器）核心代理 `proxy.mjs` + 原生 `http` 服务；Web 控制台为 Vite + React + Tailwind，构建到 `web/dist`（不入库）
 - 运行端口：默认 `3050`（`config.json` / `PORT`）
 - 控制台入口：`/`（用量概览）、`/log`（调用日志）、`/set`（代理设置）；旧 `/console` 会 302 跳转到 `/`
-- 软件维护：从指向 `1deaaa/cmdgo2api` 的 remote 拉取 `main`，无冲突时自动快进/合并，随后 `npm run build` 并重启进程
+- 软件维护：从指向 `1deaaa/cmdgo2api` 的 remote 拉取 `main`。只有确实存在未拉取提交时才 `npm run build` 并重启进程；已是最新时不构建、不重启
+- 更新检查：`GET /admin/api/update/status` 由 `web/update-check.mjs` 提供，成功结果缓存 5 分钟、失败结果缓存 30 秒，并做并发去重；控制台按钮默认禁用，仅在 `canUpdate` 为真时启用
 
 ## 常用命令
 
@@ -32,6 +33,12 @@ curl http://127.0.0.1:3050/health
 ```
 
 服务定义在 `~/.config/systemd/user/commandcode-proxy.service`，启动脚本 `~/.config/commandcode-proxy/start.sh`（会加载 `credentials.env` 并 `cd` 到本仓库）。**项目目录移动后必须同步修改这两处路径。**
+
+systemd 下“更新并重启”的实现约定（2026-10 修复）：
+
+- `relaunchProcess()` 通过 `INVOCATION_ID` / `JOURNAL_STREAM` / `SYSTEMD_EXEC_PID` 判断是否由 systemd 监管；**此时不再 spawn 替代进程**（它会随整个 cgroup 被回收，导致服务彻底停掉），而是 `process.exit(1)`，由单元的 `Restart=on-failure`（或 `always`）重新拉起。
+- 因此单元文件**必须**保留 `Restart=on-failure` 或 `Restart=always`；若配成 `Restart=no`，更新后会停在 inactive。
+- `RestartSec` 建议 ≤ 5s；控制台等待健康检查的上限已放宽到约 60s。
 
 ## 上游同步流程
 
@@ -61,7 +68,7 @@ npm start                        # 起服务，验证 /health、/、/log、/set�
 
 ### 本分支新增文件（自由修改）
 
-`web/admin.mjs`、`web/request-log.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`reasoning.mjs`、`test/reasoning.test.mjs`、`test/reasoning-wire.test.mjs`、`AGENTS.md`
+`web/admin.mjs`、`web/request-log.mjs`、`web/update-check.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`reasoning.mjs`、`test/reasoning.test.mjs`、`test/reasoning-wire.test.mjs`、`AGENTS.md`
 
 - 控制台 UI、管理 API、账号存储、远程授权等高耦合功能**必须**留在这些文件里，不要塞进 `proxy.mjs`。
 - `web/dist/` 与 `web/node_modules/` 被 `.gitignore` 忽略，构建产物不入库；部署机需要执行一次 `npm run build`。

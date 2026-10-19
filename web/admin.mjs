@@ -820,6 +820,7 @@ export function createAdminController({
   server,
   restart,
   update,
+  checkUpdate,
   relaunch,
   runtimeDir = DEFAULT_RUNTIME_DIR,
   authFile = DEFAULT_AUTH_FILE,
@@ -1740,10 +1741,28 @@ export function createAdminController({
       return true;
     }
 
+    // 只读的上游更新状态：控制台进入设置页时调用。
+    // 检查器内部有 TTL 缓存，因此不会每次进入页面都执行 git fetch。
+    if (url.pathname === '/admin/api/update/status' && request.method === 'GET') {
+      try {
+        if (typeof checkUpdate !== 'function') throw new AdminError('当前运行方式不支持自动更新', 503);
+        const result = await checkUpdate({ force: url.searchParams.get('force') === '1' });
+        sendJson(response, 200, { ok: true, ...result });
+      } catch (error) {
+        sendError(response, error);
+      }
+      return true;
+    }
+
     if (url.pathname === '/admin/api/update' && request.method === 'POST') {
       try {
         if (typeof update !== 'function') throw new AdminError('当前运行方式不支持自动更新', 503);
         const result = await update();
+        // 没有真正产生新提交时不重启进程：避免一次“检查更新”把服务打停。
+        if (!result.updated) {
+          sendJson(response, 200, { ok: true, updating: false, ...result });
+          return true;
+        }
         sendJson(response, 202, { ok: true, updating: true, ...result });
         setTimeout(() => {
           Promise.resolve((relaunch || restart)?.()).catch((error) => {

@@ -720,6 +720,29 @@ function ModelManager({ models, selectedIds, onToggle, onSelectAll, onClear, onS
   );
 }
 
+// 更新状态文案：把后端返回的 supported/dirty/behind 归一成一句可读说明。
+function describeUpdateState(info, checking) {
+  if (checking && !info) return '正在检查上游更新…';
+  if (!info) return '进入页面时会自动检查上游更新';
+  if (info.ok === false) return `无法检查更新：${info.error || '未知错误'}`;
+  if (!info.supported) return info.blockedReason || '当前部署方式不支持自动更新';
+  if (info.dirty) {
+    return info.updateAvailable
+      ? `上游有 ${info.behind} 个新提交，但工作树有未提交改动`
+      : '工作树有未提交改动，自动更新已禁用';
+  }
+  if (info.updateAvailable) return `上游有 ${info.behind} 个新提交（${info.remote}/${info.branch}）`;
+  return `已是最新（${info.remote}/${info.branch} · ${info.currentShort}）`;
+}
+
+function updateActionLabel(info, updating, checking) {
+  if (updating) return '更新中…';
+  if (checking && !info) return '检查中…';
+  if (info?.canUpdate) return '更新并重启';
+  if (!info || info.ok === false || !info.supported || info.dirty) return '更新不可用';
+  return '已是最新';
+}
+
 function Settings({
   config,
   models,
@@ -739,6 +762,9 @@ function Settings({
   onReplaceFirst,
   onRestart,
   onUpdate,
+  onCheckUpdate,
+  updateInfo,
+  updateChecking,
   addingKey,
   replacingKey,
   restarting,
@@ -847,10 +873,35 @@ function Settings({
             </Button>
             <Separator className="endpoint-separator" />
             <div className="maintenance-inline">
-              <div className="maintenance-inline-copy"><strong>软件维护</strong><span>检查更新并重新构建控制台</span></div>
-              <Button onClick={onUpdate} disabled={updating} size="sm" className="update-button">
-                {updating ? <LoaderCircle size={15} className="spin" /> : <ArrowUpRight size={15} />} 更新并重启
-              </Button>
+              <div className="maintenance-inline-copy">
+                <strong>软件维护</strong>
+                <span title={updateInfo?.checkedAt ? `检查于 ${formatDate(updateInfo.checkedAt)}` : undefined}>
+                  {describeUpdateState(updateInfo, updateChecking)}
+                </span>
+              </div>
+              <div className="maintenance-actions">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onCheckUpdate?.({ force: true })}
+                  disabled={updateChecking || updating}
+                  title="重新检查上游更新"
+                >
+                  <RefreshCw size={14} className={updateChecking ? 'spin' : ''} /> 检查
+                </Button>
+                <Button
+                  onClick={onUpdate}
+                  disabled={updating || !updateInfo?.canUpdate}
+                  size="sm"
+                  className="update-button"
+                  title={updateInfo?.blockedReason || undefined}
+                >
+                  {updating || (updateChecking && !updateInfo)
+                    ? <LoaderCircle size={15} className="spin" />
+                    : <ArrowUpRight size={15} />} {updateActionLabel(updateInfo, updating, updateChecking)}
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -924,6 +975,9 @@ function Dashboard({
   onReplaceFirst,
   onRestart,
   onUpdate,
+  onCheckUpdate,
+  updateInfo,
+  updateChecking,
   addingKey,
   replacingKey,
   restarting,
@@ -986,6 +1040,9 @@ function Dashboard({
             onReplaceFirst={onReplaceFirst}
             onRestart={onRestart}
             onUpdate={onUpdate}
+            onCheckUpdate={onCheckUpdate}
+            updateInfo={updateInfo}
+            updateChecking={updateChecking}
             addingKey={addingKey}
             replacingKey={replacingKey}
             restarting={restarting}
@@ -1056,6 +1113,8 @@ function App() {
   const [replacingKey, setReplacingKey] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
   const [error, setError] = useState('');
   const [settingsError, setSettingsError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
@@ -1104,6 +1163,8 @@ function App() {
     setAuthSession(null);
     setAuthToken('');
     setAuthTokenShown(false);
+    setUpdateInfo(null);
+    setUpdateChecking(false);
     stopAuthPolling();
   }, [stopAuthPolling]);
 
@@ -1414,7 +1475,9 @@ function App() {
   }, [stopAuthPolling]);
 
   const waitForHealthy = useCallback(async () => {
-    for (let attempt = 0; attempt < 24; attempt += 1) {
+    // 更新后由 systemd 重新拉起进程：RestartSec 通常为 5s，再叠加 Node 启动时间，
+    // 旧实现只等 7.2s，容易在服务尚未恢复时误报“健康检查未通过”。
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       await sleep(300);
       try {
         const nextStatus = await request('/status');
@@ -1426,6 +1489,35 @@ function App() {
     }
     return false;
   }, []);
+
+  const loadUpdateInfo = useCallback(async ({ force = false } = {}) => {
+    setUpdateChecking(true);
+    try {
+      const data = await request(`/update/status${force ? '?force=1' : ''}`);
+      setUpdateInfo(data);
+      return data;
+    } catch (caught) {
+      if (!handleAuthError(caught)) {
+        setUpdateInfo({
+          ok: false,
+          supported: false,
+          updateAvailable: false,
+          canUpdate: false,
+          error: caught.message,
+        });
+      }
+      return null;
+    } finally {
+      setUpdateChecking(false);
+    }
+  }, [handleAuthError]);
+
+  // 进入“代理设置”时检查一次上游状态；后端有 5 分钟 TTL 缓存，
+  // 因此重复切页不会反复触发 git fetch，按钮也只在确实有更新时可用。
+  useEffect(() => {
+    if (phase !== 'ready' || activeView !== 'settings') return;
+    loadUpdateInfo();
+  }, [phase, activeView, loadUpdateInfo]);
 
   const performRestart = useCallback(async () => {
     setSettingsError('');
@@ -1447,7 +1539,13 @@ function App() {
     setUpdating(true);
     try {
       const result = await request('/update', { method: 'POST', body: '{}' });
-      setActionMessage(result.message || '项目已更新，正在重启代理服务。');
+      setActionMessage(result.message || (result.updated ? '项目已更新，正在重启代理服务。' : '当前已是最新版本。'));
+      if (!result.updated) {
+        // 没有产生新提交：服务没有被重启，刷新一下状态即可，不需要做健康检查。
+        // updateProject 已把结果写入检查器缓存，这里不需要 force 再 fetch。
+        await loadUpdateInfo();
+        return;
+      }
       const healthy = await waitForHealthy();
       if (!healthy) throw new Error('更新后健康检查未通过，请稍后刷新页面');
       const nextAuth = await request('/auth/state');
@@ -1459,7 +1557,7 @@ function App() {
     } finally {
       setUpdating(false);
     }
-  }, [handleAuthError, resetDashboard, waitForHealthy]);
+  }, [handleAuthError, loadUpdateInfo, resetDashboard, waitForHealthy]);
 
   const addKey = useCallback(async (gatewayApiKey) => {
     setSettingsError('');
@@ -1658,6 +1756,9 @@ function App() {
       onReplaceFirst={replaceFirstKey}
       onRestart={performRestart}
       onUpdate={performUpdate}
+      onCheckUpdate={loadUpdateInfo}
+      updateInfo={updateInfo}
+      updateChecking={updateChecking}
       addingKey={addingKey}
       replacingKey={replacingKey}
       restarting={restarting}
