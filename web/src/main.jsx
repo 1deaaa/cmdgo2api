@@ -494,7 +494,7 @@ function cacheHitRate(row) {
 
 function effortAppearance(effort) {
   const value = String(effort ?? '').trim().toLowerCase();
-  if (!value || value === 'none' || value === 'default') return { label: '默认', variant: 'dark' };
+  if (!value || value === 'none' || value === 'default') return { label: '默认', variant: 'plain' };
   if (value === 'minimal' || value === 'low') return { label: value, variant: 'gray' };
   if (value === 'medium' || value === 'mid') return { label: value, variant: 'green' };
   if (value === 'high') return { label: value, variant: 'blue' };
@@ -505,7 +505,7 @@ function effortAppearance(effort) {
 
 function endpointAppearance(endpoint) {
   const value = String(endpoint ?? '').trim().toLowerCase();
-  if (value === 'chat') return { label: 'Competitions', variant: 'blue' };
+  if (value === 'chat') return { label: 'Completions', variant: 'blue' };
   if (value === 'responses' || value === 'response') return { label: 'Responses', variant: 'green' };
   if (value === 'anthropic' || value === 'messages') return { label: 'Anthropic', variant: 'orange' };
   return null;
