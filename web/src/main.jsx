@@ -505,7 +505,7 @@ function effortAppearance(effort) {
 
 function endpointAppearance(endpoint) {
   const value = String(endpoint ?? '').trim().toLowerCase();
-  if (value === 'chat') return { label: 'Chat', variant: 'blue' };
+  if (value === 'chat') return { label: 'Competitions', variant: 'blue' };
   if (value === 'responses' || value === 'response') return { label: 'Responses', variant: 'green' };
   if (value === 'anthropic' || value === 'messages') return { label: 'Anthropic', variant: 'orange' };
   return null;
