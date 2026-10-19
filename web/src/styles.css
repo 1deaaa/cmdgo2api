@@ -541,6 +541,10 @@
 /* 日志页固定占满剩余视口：页面本身不滚动，只在表格容器内滚动。 */
 .app-shell-logs { height: 100vh; overflow: hidden; }
 .app-shell-logs .main-shell { display: flex; height: 100%; min-height: 0; flex-direction: column; }
+/* 父级改成 flex column 后，子项必须显式占满宽度，否则 auto margin 会让标题收缩并居中。 */
+.app-shell-logs .topbar,
+.app-shell-logs .page-heading,
+.app-shell-logs .log-page-body { width: 100%; box-sizing: border-box; }
 .app-shell-logs .topbar,
 .app-shell-logs .page-heading { flex: 0 0 auto; }
 .log-page-body { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; padding-bottom: 20px; }
