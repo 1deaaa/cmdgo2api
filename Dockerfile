@@ -9,6 +9,9 @@ FROM node:22-alpine
 WORKDIR /app
 COPY package.json config.json proxy.mjs ./
 COPY web/admin.mjs ./web/admin.mjs
+COPY web/request-log.mjs ./web/request-log.mjs
+COPY web/request-log-store.mjs ./web/request-log-store.mjs
+COPY web/update-check.mjs ./web/update-check.mjs
 COPY tools ./tools
 COPY --from=web-build /build/web/dist ./web/dist
 EXPOSE 3050

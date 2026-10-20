@@ -108,6 +108,7 @@ export async function startProxy({ upstreamPort, env = {}, cwd } = {}) {
     mkdirSync(join(workdir, 'web'), { recursive: true });
   }
   copyFileSync(join(REPO, 'web', 'admin.mjs'), join(workdir, 'web', 'admin.mjs'));
+  copyFileSync(join(REPO, 'web', 'request-log-store.mjs'), join(workdir, 'web', 'request-log-store.mjs'));
   copyFileSync(join(REPO, 'web', 'request-log.mjs'), join(workdir, 'web', 'request-log.mjs'));
   copyFileSync(join(REPO, 'web', 'update-check.mjs'), join(workdir, 'web', 'update-check.mjs'));
   if (!existsSync(join(workdir, 'config.json'))) {

@@ -8,7 +8,8 @@
  * 这样 OpenAI / Anthropic / Responses 三个入口都自动拥有日志，proxy.mjs 只增加
  * 一个 import 与 forwardToCC 内的一小段接线，避免在每个 handler 里重复埋点。
  *
- * 注意：调用日志只保留在进程内存中（控制台展示用），不写入磁盘。
+ * 注意：本模块只负责采集；持久化、轮转与分页读取由 web/request-log-store.mjs
+ * 配合 admin.mjs 完成。
  */
 
 const MAX_ERROR_DETAIL_CHARS = 4000;

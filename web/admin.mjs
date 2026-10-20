@@ -6,7 +6,6 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
-  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -17,6 +16,7 @@ import {
 } from 'fs';
 import { homedir } from 'os';
 import { extname, join, relative, resolve } from 'path';
+import { createRequestLogStore } from './request-log-store.mjs';
 
 const DEFAULT_API_BASE = 'https://api.commandcode.ai';
 const CALLBACK_BASE = 'https://commandcode.ai';
@@ -26,9 +26,12 @@ const CONSOLE_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const CONSOLE_COOKIE_NAME = 'cc_console_session';
 const MAX_GATEWAY_KEYS = 32;
 const MAX_ACCOUNTS = 32;
+// 内存只缓存最近 300 条用于实时刷新；磁盘保留完整历史供翻页读取。
 const MAX_REQUEST_LOGS = 300;
-const MAX_REQUEST_LOG_FILE_LINES = 1200;
+const REQUEST_LOG_RETENTION = 5000;
 const REQUEST_LOG_FILE_NAME = 'request-log.jsonl';
+const DEFAULT_REQUEST_PAGE_SIZE = 50;
+const MAX_REQUEST_PAGE_SIZE = 200;
 const MAX_REQUEST_ERROR_DETAIL = 4000;
 const MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_RUNTIME_DIR = join(homedir(), '.config', 'commandcode-proxy');
@@ -790,30 +793,6 @@ function writeRuntimeSettings(runtimeDir, allowedModelIds) {
   chmodSync(target, 0o600);
 }
 
-// 从本地 JSONL 读取最近的调用日志。文件按时间顺序追加，返回时反转为最新在前。
-function readStoredRequestLogs(filePath, limit) {
-  if (!existsSync(filePath)) return { records: [], lines: 0 };
-  let raw;
-  try {
-    raw = readFileSync(filePath, 'utf8');
-  } catch {
-    return { records: [], lines: 0 };
-  }
-  const lines = raw.split(/\r?\n/).filter((line) => line.trim());
-  const records = [];
-  for (const line of lines) {
-    try {
-      const value = JSON.parse(line);
-      if (value && typeof value === 'object' && typeof value.id === 'string' && typeof value.at === 'string') {
-        records.push(value);
-      }
-    } catch {
-      // 跳过损坏行；文件轮转时会重写为纯合法内容
-    }
-  }
-  return { records: records.slice(-limit).reverse(), lines: lines.length };
-}
-
 export function createAdminController({
   config,
   projectDir,
@@ -830,22 +809,15 @@ export function createAdminController({
   const browserSessions = new Map();
   const consoleSessions = new Map();
   const loginFailures = new Map();
-  // 调用日志：内存保留最近 MAX_REQUEST_LOGS 条，同时追加到运行目录的 JSONL；
-  // 进程重启后从本地文件恢复。测试模式不落盘，避免污染真实运行目录。
+  // 调用日志：磁盘保留 REQUEST_LOG_RETENTION 条历史，内存缓存最近 MAX_REQUEST_LOGS 条；
+  // 进程重启后从本地文件恢复，翻页时再按需读取磁盘。测试模式不落盘，避免污染真实运行目录。
   const requestLogPersistence = process.env.CC_TEST_MODE !== '1';
-  const requestLogFile = join(runtimeDir, REQUEST_LOG_FILE_NAME);
-  if (requestLogPersistence) {
-    try {
-      mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
-    } catch {
-      // 目录创建失败时仍保留内存日志
-    }
-  }
-  const storedRequestLog = requestLogPersistence
-    ? readStoredRequestLogs(requestLogFile, MAX_REQUEST_LOGS)
-    : { records: [], lines: 0 };
-  const requestLogs = storedRequestLog.records;
-  let requestLogFileLines = storedRequestLog.lines;
+  const requestLogStore = createRequestLogStore({
+    filePath: join(runtimeDir, REQUEST_LOG_FILE_NAME),
+    memoryLimit: MAX_REQUEST_LOGS,
+    retention: REQUEST_LOG_RETENTION,
+    persistence: requestLogPersistence,
+  });
   const startedAt = new Date().toISOString();
   let modelCache = null;
   let accountStore = readAccountStore(accountsFile, authFile, {
@@ -937,33 +909,7 @@ export function createAdminController({
       errorMessage: text(entry.errorMessage) || null,
       errorDetail: text(entry.errorDetail).slice(0, MAX_REQUEST_ERROR_DETAIL) || null,
     };
-    requestLogs.unshift(record);
-    if (requestLogs.length > MAX_REQUEST_LOGS) requestLogs.length = MAX_REQUEST_LOGS;
-    persistRequestLog(record);
-  }
-
-  // 追加一条 JSONL；文件超过阈值时重写为当前内存中的最近记录，避免无限增长。
-  function persistRequestLog(record) {
-    if (!requestLogPersistence) return;
-    try {
-      if (requestLogFileLines >= MAX_REQUEST_LOG_FILE_LINES) rewriteRequestLogFile();
-      appendFileSync(requestLogFile, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
-      requestLogFileLines += 1;
-    } catch {
-      // 落盘失败不影响代理主流程，内存日志仍然可用
-    }
-  }
-
-  function rewriteRequestLogFile() {
-    const directory = resolve(requestLogFile, '..');
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const temporary = join(directory, `.request-log.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-    const body = [...requestLogs].reverse().map((item) => JSON.stringify(item)).join('\n');
-    writeFileSync(temporary, body ? `${body}\n` : '', { encoding: 'utf8', mode: 0o600 });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, requestLogFile);
-    chmodSync(requestLogFile, 0o600);
-    requestLogFileLines = requestLogs.length;
+    requestLogStore.add(record);
   }
 
   function accountMatches(left, right) {
@@ -1461,9 +1407,31 @@ export function createAdminController({
     }
 
     if (url.pathname === '/admin/api/requests' && request.method === 'GET') {
-      const requested = finiteNumber(url.searchParams.get('limit'));
-      const limit = requested && requested > 0 ? Math.min(Math.trunc(requested), MAX_REQUEST_LOGS) : MAX_REQUEST_LOGS;
-      sendJson(response, 200, { ok: true, requests: requestLogs.slice(0, limit), total: requestLogs.length, maxEntries: MAX_REQUEST_LOGS });
+      // 分页参数：page 从 1 开始；pageSize 依次兼容 pageSize / limit 两种写法。
+      const pageSizeInput = finiteNumber(url.searchParams.get('pageSize'))
+        ?? finiteNumber(url.searchParams.get('limit'));
+      const pageSize = pageSizeInput && pageSizeInput > 0
+        ? Math.min(Math.trunc(pageSizeInput), MAX_REQUEST_PAGE_SIZE)
+        : DEFAULT_REQUEST_PAGE_SIZE;
+      const pageInput = finiteNumber(url.searchParams.get('page'));
+      let page = pageInput && pageInput > 0 ? Math.trunc(pageInput) : 1;
+      let result = requestLogStore.list({ offset: (page - 1) * pageSize, limit: pageSize });
+      let totalPages = Math.max(1, Math.ceil(result.total / pageSize));
+      // 日志轮转或清理后页码可能越界，回退到最后一页而不是返回空白页。
+      if (page > totalPages) {
+        page = totalPages;
+        result = requestLogStore.list({ offset: (page - 1) * pageSize, limit: pageSize });
+        totalPages = Math.max(1, Math.ceil(result.total / pageSize));
+      }
+      sendJson(response, 200, {
+        ok: true,
+        requests: result.records,
+        total: result.total,
+        page,
+        pageSize,
+        totalPages,
+        maxEntries: REQUEST_LOG_RETENTION,
+      });
       return true;
     }
 

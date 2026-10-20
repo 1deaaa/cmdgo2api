@@ -6,6 +6,8 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleAlert,
   Clock3,
   Copy,
@@ -38,6 +40,9 @@ import { cn, formatDate, formatFetchedAt, formatMoney } from './lib/utils';
 import './styles.css';
 
 const API_ROOT = '/admin/api';
+// 调用日志每页条数选项；默认 50 条，与后端默认值保持一致。
+const REQUEST_PAGE_SIZES = [20, 50, 100];
+const DEFAULT_REQUEST_PAGE_SIZE = 50;
 
 function viewFromPath(pathname) {
   const path = String(pathname || '/').replace(/\/+$/, '') || '/';
@@ -511,9 +516,14 @@ function endpointAppearance(endpoint) {
   return null;
 }
 
-function RequestLogPage({ requests, error }) {
+function RequestLogPage({ requests, error, page, pageSize, total, loading, onPageChange, onPageSizeChange }) {
   const [expandedId, setExpandedId] = useState('');
-  const rows = (Array.isArray(requests) ? requests : []).slice(0, 50);
+  const rows = Array.isArray(requests) ? requests : [];
+  const totalCount = Math.max(0, Number(total) || 0);
+  const currentPage = Math.max(1, Number(page) || 1);
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const rangeStart = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = Math.min(totalCount, currentPage * pageSize);
   return (
     <div className="page-body log-page-body">
       {error && <Notice>{error}</Notice>}
@@ -522,8 +532,10 @@ function RequestLogPage({ requests, error }) {
           <div className="log-empty">
             <div className="log-empty-icon"><Activity size={20} /></div>
             <div>
-              <h3>还没有调用记录</h3>
-              <p>通过代理发起一次对话请求后，这里会显示模型、token、缓存命中、首字延迟与错误详情。</p>
+              <h3>{totalCount === 0 ? '还没有调用记录' : '本页没有记录'}</h3>
+              <p>{totalCount === 0
+                ? '通过代理发起一次对话请求后，这里会显示模型、token、缓存命中、首字延迟与错误详情。'
+                : '请返回上一页或调整每页条数。'}</p>
             </div>
           </div>
         ) : (
@@ -639,6 +651,48 @@ function RequestLogPage({ requests, error }) {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {totalCount > 0 && (
+          <div className="log-pagination">
+            <span className="log-pagination-summary">
+              显示 {rangeStart}–{rangeEnd} 条 · 共 {totalCount} 条
+            </span>
+            <div className="log-pagination-controls">
+              <label className="log-page-size">
+                每页
+                <select
+                  value={pageSize}
+                  onChange={(event) => onPageSizeChange(Number(event.target.value))}
+                  disabled={loading}
+                  aria-label="每页显示条数"
+                >
+                  {REQUEST_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+                </select>
+                条
+              </label>
+              <div className="log-pager">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onPageChange(currentPage - 1)}
+                  disabled={loading || currentPage <= 1}
+                >
+                  <ChevronLeft size={14} /> 上一页
+                </Button>
+                <span className="log-page-indicator">第 {currentPage} / {totalPages} 页</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onPageChange(currentPage + 1)}
+                  disabled={loading || currentPage >= totalPages}
+                >
+                  下一页 <ChevronRight size={14} />
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </Card>
@@ -956,9 +1010,13 @@ function Dashboard({
   onRefreshAccounts,
   requests,
   requestsTotal,
+  requestsPage,
+  requestsPageSize,
   requestsLoading,
   requestsError,
   onRefreshRequests,
+  onRequestsPageChange,
+  onRequestsPageSizeChange,
   refreshing,
   authSession,
   onOpenAuth,
@@ -989,7 +1047,7 @@ function Dashboard({
   const pageMeta = activeView === 'settings'
     ? { title: '代理设置', kicker: 'Configuration', hint: '管理密钥、模型与进程维护' }
     : activeView === 'logs'
-      ? { title: '调用日志', kicker: 'Request log', hint: '每 20 秒自动刷新日志' }
+      ? { title: '调用日志', kicker: 'Request log', hint: '可分页查看最近保留的请求记录' }
       : { title: '用量概览', kicker: 'Overview', hint: '每分钟自动刷新用量' };
   return (
     <div className={cn('app-shell', activeView === 'logs' && 'app-shell-logs')}>
@@ -1011,7 +1069,9 @@ function Dashboard({
           <div className="page-heading-actions">
             <div className="page-heading-meta">
               <Activity size={15} />
-              {activeView === 'logs' ? `已加载 ${requestsTotal} 条 · 每 20 秒刷新` : pageMeta.hint}
+              {activeView === 'logs'
+                ? `共 ${requestsTotal} 条记录${requestsPage === 1 ? ' · 每 20 秒刷新' : ''}`
+                : pageMeta.hint}
             </div>
             {activeView === 'logs' && (
               <Button type="button" size="sm" variant="secondary" onClick={onRefreshRequests} disabled={requestsLoading}>
@@ -1053,7 +1113,13 @@ function Dashboard({
         ) : activeView === 'logs' ? (
           <RequestLogPage
             requests={requests}
+            page={requestsPage}
+            pageSize={requestsPageSize}
+            total={requestsTotal}
+            loading={requestsLoading}
             error={requestsError}
+            onPageChange={onRequestsPageChange}
+            onPageSizeChange={onRequestsPageSizeChange}
           />
         ) : (
           <Overview
@@ -1092,6 +1158,8 @@ function App() {
   const [usage, setUsage] = useState(null);
   const [requests, setRequests] = useState([]);
   const [requestsTotal, setRequestsTotal] = useState(0);
+  const [requestsPage, setRequestsPage] = useState(1);
+  const [requestsPageSize, setRequestsPageSize] = useState(DEFAULT_REQUEST_PAGE_SIZE);
   const [requestsLoading, setRequestsLoading] = useState(false);
   const [requestsError, setRequestsError] = useState('');
   const [models, setModels] = useState([]);
@@ -1126,6 +1194,10 @@ function App() {
   const authPollingBusyRef = useRef(false);
   const usageRefreshingRef = useRef(false);
   const requestsRefreshingRef = useRef(false);
+  // 分页参数放在 ref 里，避免静默刷新/定时器因为 state 变化而反复重建回调。
+  const requestsQueryRef = useRef({ page: 1, pageSize: DEFAULT_REQUEST_PAGE_SIZE });
+  const requestsTotalRef = useRef(0);
+  const requestsRequestIdRef = useRef(0);
   const configRef = useRef(null);
 
   configRef.current = config;
@@ -1156,6 +1228,14 @@ function App() {
     setUsage(null);
     setRequests([]);
     setRequestsTotal(0);
+    setRequestsPage(1);
+    setRequestsPageSize(DEFAULT_REQUEST_PAGE_SIZE);
+    requestsQueryRef.current = { page: 1, pageSize: DEFAULT_REQUEST_PAGE_SIZE };
+    requestsTotalRef.current = 0;
+    // 作废仍在途的分页请求，避免登出/切换账号后旧响应把数据写回来。
+    requestsRequestIdRef.current += 1;
+    requestsRefreshingRef.current = false;
+    setRequestsLoading(false);
     setRequestsError('');
     setModels([]);
     setSelectedModelIds(new Set());
@@ -1272,20 +1352,53 @@ function App() {
 
   const loadRequests = useCallback(async (silent = false) => {
     if (silent && requestsRefreshingRef.current) return;
+    const { page, pageSize } = requestsQueryRef.current;
+    const requestId = ++requestsRequestIdRef.current;
     requestsRefreshingRef.current = true;
     if (!silent) setRequestsLoading(true);
     try {
-      const data = await request('/requests?limit=50');
+      const data = await request(`/requests?page=${page}&pageSize=${pageSize}`);
+      // 快速翻页可能产生并发请求，只采用最后一次请求的结果。
+      if (requestId !== requestsRequestIdRef.current) return;
+      const total = Math.max(0, Number(data.total) || 0);
+      const resolvedPage = Math.max(1, Number(data.page) || 1);
+      requestsQueryRef.current = { page: resolvedPage, pageSize };
+      requestsTotalRef.current = total;
       setRequests(Array.isArray(data.requests) ? data.requests : []);
-      setRequestsTotal(Number(data.total) || 0);
+      setRequestsTotal(total);
+      setRequestsPage(resolvedPage);
       setRequestsError('');
     } catch (caught) {
-      if (!handleAuthError(caught)) setRequestsError(caught.message);
+      if (requestId === requestsRequestIdRef.current && !handleAuthError(caught)) {
+        setRequestsError(caught.message);
+      }
     } finally {
-      requestsRefreshingRef.current = false;
-      if (!silent) setRequestsLoading(false);
+      if (requestId === requestsRequestIdRef.current) {
+        requestsRefreshingRef.current = false;
+        if (!silent) setRequestsLoading(false);
+      }
     }
   }, [handleAuthError]);
+
+  const changeRequestsPage = useCallback((nextPage) => {
+    const { pageSize } = requestsQueryRef.current;
+    const totalPages = Math.max(1, Math.ceil(requestsTotalRef.current / pageSize));
+    const page = Math.min(Math.max(1, Math.trunc(Number(nextPage) || 1)), totalPages);
+    if (page === requestsQueryRef.current.page) return;
+    requestsQueryRef.current = { ...requestsQueryRef.current, page };
+    setRequestsPage(page);
+    loadRequests(false);
+  }, [loadRequests]);
+
+  const changeRequestsPageSize = useCallback((nextSize) => {
+    const size = Number(nextSize);
+    const pageSize = REQUEST_PAGE_SIZES.includes(size) ? size : DEFAULT_REQUEST_PAGE_SIZE;
+    if (pageSize === requestsQueryRef.current.pageSize) return;
+    requestsQueryRef.current = { page: 1, pageSize };
+    setRequestsPageSize(pageSize);
+    setRequestsPage(1);
+    loadRequests(false);
+  }, [loadRequests]);
 
   const loadModels = useCallback(async (forceRefresh = false) => {
     setModelsLoading(true);
@@ -1328,11 +1441,14 @@ function App() {
     return () => window.clearInterval(timer);
   }, [phase, hydrateDashboard, loadUsage]);
 
-  // 调用日志页每 20 秒刷新；切到该标签页时立即拉一次。
+  // 调用日志页：进入时立即拉一次；仅首页启用 20 秒自动刷新，
+  // 浏览历史页时避免新记录插入导致当前页内容跳动。
   useEffect(() => {
     if (phase !== 'ready' || activeView !== 'logs') return undefined;
     loadRequests(true);
-    const timer = window.setInterval(() => { loadRequests(true); }, 20_000);
+    const timer = window.setInterval(() => {
+      if (requestsQueryRef.current.page === 1) loadRequests(true);
+    }, 20_000);
     return () => window.clearInterval(timer);
   }, [phase, activeView, loadRequests]);
 
@@ -1737,9 +1853,13 @@ function App() {
       onRefreshAccounts={refreshAccounts}
       requests={requests}
       requestsTotal={requestsTotal}
+      requestsPage={requestsPage}
+      requestsPageSize={requestsPageSize}
       requestsLoading={requestsLoading}
       requestsError={requestsError}
       onRefreshRequests={() => loadRequests(false)}
+      onRequestsPageChange={changeRequestsPage}
+      onRequestsPageSizeChange={changeRequestsPageSize}
       refreshing={refreshing}
       authSession={authSession}
       onOpenAuth={openAuthPage}

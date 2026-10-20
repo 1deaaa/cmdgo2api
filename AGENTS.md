@@ -68,10 +68,17 @@ npm start                        # 起服务，验证 /health、/、/log、/set�
 
 ### 本分支新增文件（自由修改）
 
-`web/admin.mjs`、`web/request-log.mjs`、`web/update-check.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`reasoning.mjs`、`test/reasoning.test.mjs`、`test/reasoning-wire.test.mjs`、`AGENTS.md`
+`web/admin.mjs`、`web/request-log.mjs`、`web/request-log-store.mjs`、`web/update-check.mjs`、`web/src/**`、`web/package.json`、`web/vite.config.js`、`web/tailwind.config.js`、`web/index.html`、`web/postcss.config.js`、`tools/remote-login.mjs`、`reasoning.mjs`、`test/reasoning.test.mjs`、`test/reasoning-wire.test.mjs`、`test/request-log-store.test.mjs`、`AGENTS.md`
 
 - 控制台 UI、管理 API、账号存储、远程授权等高耦合功能**必须**留在这些文件里，不要塞进 `proxy.mjs`。
 - `web/dist/` 与 `web/node_modules/` 被 `.gitignore` 忽略，构建产物不入库；部署机需要执行一次 `npm run build`。
+
+### 调用日志存储与分页（本分支新增，改动必须留在 request-log-store.mjs）
+
+- `web/request-log.mjs` 只负责旁路采集单次请求的 token、延迟与错误；
+- `web/request-log-store.mjs` 负责 JSONL 持久化：内存缓存最近 300 条、磁盘保留 5000 条，超过阈值时原子轮转，翻页时按需回读磁盘；
+- 控制台接口 `GET /admin/api/requests?page=&pageSize=`，`pageSize` 前端提供 20/50/100（默认 50），后端上限 200；
+- 解析、轮转与冷启动恢复的回归用例在 `test/request-log-store.test.mjs`，修改存储逻辑时必须同步更新。
 
 ### 推理档位映射（本分支新增，改动必须留在 reasoning.mjs）
 

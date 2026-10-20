@@ -591,6 +591,17 @@
 .log-empty h3 { margin: 0; color: #18181b; font-size: 15px; font-weight: 700; }
 .log-empty p { margin: 4px 0 0; color: #71717a; font-size: 12.5px; }
 
+/* 分页工具条：固定在表格底部，表格区域独立滚动。 */
+.log-pagination { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #ececef; padding: 10px 14px; background: #fff; color: #71717a; font-size: 12px; }
+.log-pagination-summary { color: #a1a1aa; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.log-pagination-controls { display: flex; align-items: center; gap: 16px; }
+.log-page-size { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.log-page-size select { height: 30px; border: 1px solid #e4e4e7; border-radius: 7px; background: #fff; padding: 0 7px; color: #3f3f46; font: inherit; font-size: 12px; cursor: pointer; }
+.log-page-size select:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.log-page-size select:disabled { cursor: not-allowed; opacity: 0.55; }
+.log-pager { display: inline-flex; align-items: center; gap: 8px; }
+.log-page-indicator { min-width: 84px; color: #3f3f46; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
+
 .spin { animation: spin 900ms linear infinite; }
 
 @keyframes spin {
@@ -648,6 +659,8 @@
   .model-owner { display: none; }
   .model-footer { align-items: stretch; flex-direction: column; }
   .model-footer > button { width: 100%; }
+  .log-pagination { align-items: flex-start; flex-direction: column; }
+  .log-pagination-controls { width: 100%; flex-wrap: wrap; justify-content: space-between; }
   .maintenance-inline { align-items: stretch; flex-direction: column; gap: 8px; }
   .maintenance-actions { width: 100%; }
   .maintenance-actions .update-button { flex: 1; }
