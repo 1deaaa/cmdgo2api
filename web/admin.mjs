@@ -17,6 +17,7 @@ import {
 import { homedir } from 'os';
 import { extname, join, relative, resolve } from 'path';
 import { createRequestLogStore } from './request-log-store.mjs';
+import { maybeAttachDownstreamProbe, snapshotStreamMetrics } from './stream-metrics.mjs';
 
 const DEFAULT_API_BASE = 'https://api.commandcode.ai';
 const CALLBACK_BASE = 'https://commandcode.ai';
@@ -58,6 +59,14 @@ function finiteNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+// 连接质量统计用（本分支新增）：对数值样本取百分位，空样本返回 null。
+function percentileOf(samples, ratio) {
+  const values = samples.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!values.length) return null;
+  const index = Math.min(values.length - 1, Math.max(0, Math.ceil(values.length * ratio) - 1));
+  return Math.round(values[index]);
 }
 
 function text(value) {
@@ -901,6 +910,12 @@ export function createAdminController({
       ttftMs: entry.ttftMs === null || entry.ttftMs === undefined ? null : asCount(entry.ttftMs),
       durationMs: asCount(entry.durationMs),
       speed: entry.speed === null || entry.speed === undefined ? null : Math.max(0, number(entry.speed)),
+      // 流式质量统计（本分支新增）：旧记录或非流式请求没有这些字段时保持 null。
+      chunks: asCount(entry.chunks),
+      gapP50Ms: entry.gapP50Ms === null || entry.gapP50Ms === undefined ? null : asCount(entry.gapP50Ms),
+      gapP95Ms: entry.gapP95Ms === null || entry.gapP95Ms === undefined ? null : asCount(entry.gapP95Ms),
+      gapMaxMs: entry.gapMaxMs === null || entry.gapMaxMs === undefined ? null : asCount(entry.gapMaxMs),
+      stallCount: asCount(entry.stallCount),
       maskedToken: text(entry.maskedToken) || '—',
       accountName: requestAccountName(text(entry.accountApiKey)),
       status: entry.status === 'error' ? 'error' : 'success',
@@ -1257,6 +1272,174 @@ export function createAdminController({
     };
   }
 
+  // ── 连接质量（本分支新增） ──────────────────────────────────
+  // 浏览器 ↔ 网关的空闲往返探测端点：零状态、不鉴权（与 /admin/api/status 一致），
+  // 响应不含任何敏感信息；no-store 避免被浏览器或中间层缓存影响测量。
+  function handlePing(request, response) {
+    sendJson(response, 200, { ok: true, t: Date.now() }, { 'Cache-Control': 'no-store' });
+    return true;
+  }
+
+  // 网关 ↔ 上游的近期质量：从调用日志最近 100 条里聚合 TTFT、速度、错误与停顿。
+  function upstreamQualitySummary() {
+    const { records } = requestLogStore.list({ offset: 0, limit: 100 });
+    const ttfts = [];
+    const speeds = [];
+    let errorCount = 0;
+    let stallCount = 0;
+    let lastGapP95Ms = null;
+    for (const record of records) {
+      if (record.status === 'error') {
+        errorCount += 1;
+      } else if (record.ttftMs !== null && record.ttftMs !== undefined) {
+        ttfts.push(record.ttftMs);
+      }
+      if (record.speed !== null && record.speed !== undefined) speeds.push(record.speed);
+      stallCount += record.stallCount || 0;
+      if (lastGapP95Ms === null && record.gapP95Ms !== null && record.gapP95Ms !== undefined) {
+        lastGapP95Ms = record.gapP95Ms;
+      }
+    }
+    return {
+      sampleSize: records.length,
+      errorCount,
+      ttftP50Ms: percentileOf(ttfts, 0.5),
+      ttftP95Ms: percentileOf(ttfts, 0.95),
+      speedP50: percentileOf(speeds, 0.5),
+      stallCount,
+      lastGapP95Ms,
+    };
+  }
+
+  // 流式测速常量与并发守卫：同一时刻只允许一条测速流，避免自我压测。
+  const SPEEDTEST_IDLE_TIMEOUT_MS = 20_000;
+  const SPEEDTEST_TOTAL_TIMEOUT_MS = 60_000;
+  // 数数类 prompt 能让 token 持续稳定产出，便于观察到达间隔；300 token 上限控制成本。
+  const SPEEDTEST_PROMPT = '请从 1 数到 60，每个数字单独一行，不要输出其他内容。';
+  let speedtestRunning = false;
+
+  /**
+   * 受控流式测速：以真实网关路径向自身回环发起一条小流式请求，把网关侧每个
+   * 数据块的到达时间随 SSE 帧推给浏览器。浏览器用自己的本地到达时间对比同一
+   * 条流的两组间隔，差值即「本机 ↔ 网关」段的附加延迟。
+   * 回环请求复用真实的鉴权、模型白名单、自动换号与 SSE 翻译路径，密钥不出进程。
+   */
+  async function runSpeedtest(response, model) {
+    const send = (event) => {
+      try {
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      } catch {
+        // 浏览器可能已断开，忽略即可，finally 会收口
+      }
+    };
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-store',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const credentials = currentCredentials();
+    if (!credentials.gatewayKeys.length) {
+      send({ type: 'error', message: '还没有设置网关密钥，无法发起测速请求' });
+      response.end();
+      return;
+    }
+    if (speedtestRunning) {
+      send({ type: 'error', message: '已有一个测速在进行中，请稍后再试' });
+      response.end();
+      return;
+    }
+    speedtestRunning = true;
+    const controller = new AbortController();
+    const onClientClose = () => {
+      try {
+        controller.abort();
+      } catch {
+        // ignore
+      }
+    };
+    response.once('close', onClientClose);
+    const startedAt = Date.now();
+    let lastReadAt = startedAt;
+    let ttftMs = null;
+    let chunks = 0;
+    let totalBytes = 0;
+    const gaps = [];
+    const overallTimer = setTimeout(() => controller.abort(), SPEEDTEST_TOTAL_TIMEOUT_MS);
+    const idleTimer = setInterval(() => {
+      if (Date.now() - lastReadAt > SPEEDTEST_IDLE_TIMEOUT_MS) controller.abort();
+    }, 1000);
+    try {
+      const address = server?.address?.();
+      const host = !address || address.address === '::' || address.address === '0.0.0.0'
+        ? '127.0.0.1'
+        : address.address;
+      const port = Number(address?.port) || Number(config.port) || 3050;
+      const upstream = await fetch(`http://${host}:${port}/v1/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${credentials.gatewayKeys[0].value}`,
+        },
+        body: JSON.stringify({
+          model: text(model) || undefined,
+          stream: true,
+          max_tokens: 300,
+          messages: [{ role: 'user', content: SPEEDTEST_PROMPT }],
+        }),
+      });
+      if (!upstream.ok || !upstream.body) {
+        const detail = await upstream.text().catch(() => '');
+        send({
+          type: 'error',
+          message: `测速请求失败（HTTP ${upstream.status}）`,
+          detail: detail.slice(0, 500),
+        });
+        return;
+      }
+      send({ type: 'start', model: text(model) || null });
+      const reader = upstream.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const now = Date.now();
+        if (ttftMs === null) ttftMs = now - startedAt;
+        else gaps.push(now - lastReadAt);
+        lastReadAt = now;
+        chunks += 1;
+        totalBytes += value ? value.byteLength : 0;
+        send({ type: 'chunk', at: now - startedAt, bytes: value ? value.byteLength : 0 });
+      }
+      send({
+        type: 'done',
+        ttftMs,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        chunks,
+        totalBytes,
+        gapP50Ms: percentileOf(gaps, 0.5),
+        gapP95Ms: percentileOf(gaps, 0.95),
+        gapMaxMs: gaps.length ? Math.round(Math.max(...gaps)) : null,
+      });
+    } catch (error) {
+      const timedOut = controller.signal.aborted && ttftMs === null;
+      send({
+        type: 'error',
+        message: timedOut ? '测速超时：上游长时间没有返回数据' : String(error?.message || '测速失败'),
+      });
+    } finally {
+      clearTimeout(overallTimer);
+      clearInterval(idleTimer);
+      response.off('close', onClientClose);
+      speedtestRunning = false;
+      try {
+        response.end();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   async function handleApi(request, response, url) {
     pruneSessions();
 
@@ -1269,6 +1452,32 @@ export function createAdminController({
         port: Number(config.port),
         startedAt,
       });
+      return true;
+    }
+
+    // ── 连接质量（本分支新增） ──────────────────────────────
+    if (url.pathname === '/admin/api/ping' && request.method === 'GET') {
+      return handlePing(request, response);
+    }
+
+    if (url.pathname === '/admin/api/stream-quality' && request.method === 'GET') {
+      if (!requireConsoleSession(request, response)) return true;
+      sendJson(response, 200, {
+        ok: true,
+        upstream: upstreamQualitySummary(),
+        downstream: snapshotStreamMetrics(),
+      });
+      return true;
+    }
+
+    if (url.pathname === '/admin/api/speedtest' && request.method === 'POST') {
+      if (!requireConsoleSession(request, response)) return true;
+      try {
+        const body = await readBody(request);
+        await runSpeedtest(response, text(body.model));
+      } catch (error) {
+        sendError(response, error);
+      }
       return true;
     }
 
@@ -1808,7 +2017,12 @@ export function createAdminController({
       const isAsset = path.startsWith('/assets/') || path.startsWith('/console/assets/');
       const isFavicon = path === '/favicon.svg' || path === '/console/favicon.svg';
       const isLegacyConsole = path.startsWith('/console/');
-      if (!isAdmin && !isCallback && !isConsoleAlias && !isAppPage && !isAsset && !isFavicon) return false;
+      if (!isAdmin && !isCallback && !isConsoleAlias && !isAppPage && !isAsset && !isFavicon) {
+        // 流式 API 路径的下行探针（本分支新增）：在交回代理路由之前挂上，
+        // 由本分支文件完成统计，proxy.mjs 不需要为连接质量做任何改动。
+        maybeAttachDownstreamProbe(request, response, path);
+        return false;
+      }
       if (isCallback) {
         if (!['GET', 'POST'].includes(request.method)) {
           sendText(response, 405, '仅支持 GET 或 POST');

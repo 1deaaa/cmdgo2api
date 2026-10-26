@@ -5,7 +5,7 @@
 ## 项目概览
 
 - 上游项目：`https://github.com/MAXeaglet/commandcode-proxy`（remote: `upstream`）
-- 本分支仓库：`https://github.com/1deaaa/cmdgo2api`（remote: `github`），另有私有镜像 `origin`（`git.1dea.top/aidea/cmd2api.git`）
+- 本分支仓库：`https://github.com/1deaaa/cmdgo2api`（remote: `github`）
 - 技术栈：Node.js（ESM，无打包器）核心代理 `proxy.mjs` + 原生 `http` 服务；Web 控制台为 Vite + React + Tailwind，构建到 `web/dist`（不入库）
 - 运行端口：默认 `3050`（`config.json` / `PORT`）
 - 控制台入口：`/`（用量概览）、`/log`（调用日志）、`/set`（代理设置）；旧 `/console` 会 302 跳转到 `/`

@@ -682,3 +682,52 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ── 连接质量监控（本分支新增） ────────────────────────────── */
+
+.quality-card { margin-bottom: 18px; }
+.quality-header { padding-bottom: 8px; }
+.quality-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.quality-cell {
+  display: flex; min-width: 0; flex-direction: column; gap: 8px;
+  padding: 13px 15px; border: 1px solid #e4e4e7; border-radius: 12px;
+}
+.quality-cell-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: #3f3f46; }
+.quality-badge { flex: 0 0 auto; }
+.qc-sparkline { display: block; width: 100%; height: 32px; }
+.quality-metrics { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: #71717a; }
+.quality-metrics strong { color: #18181b; font-weight: 600; }
+.quality-metrics-stack { flex-direction: column; gap: 4px; }
+.quality-note { margin: 0; font-size: 11px; color: #a1a1aa; line-height: 1.55; }
+
+.speedtest-panel { display: flex; margin-top: 14px; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px dashed #e4e4e7; }
+.speedtest-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.speedtest-head strong { display: block; font-size: 13px; color: #18181b; }
+.speedtest-head span { display: block; max-width: 560px; margin-top: 3px; font-size: 12px; color: #71717a; line-height: 1.55; }
+.speedtest-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.speedtest-controls select,
+.speedtest-controls input {
+  max-width: 220px; height: 34px; padding: 0 10px; font-size: 12px; color: #18181b;
+  border: 1px solid #e4e4e7; border-radius: 8px; background: #fff;
+}
+.speedtest-controls select:focus,
+.speedtest-controls input:focus { outline: 2px solid var(--mint, #ccf1ea); border-color: #147568; }
+.speedtest-error { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b91c1c; }
+.speedtest-results { display: flex; flex-direction: column; gap: 10px; }
+.speedtest-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.speedtest-col {
+  display: flex; min-width: 0; flex-direction: column; gap: 6px;
+  padding: 10px 12px; border: 1px solid #f0f0f1; border-radius: 10px;
+}
+.qc-label { font-size: 11px; color: #71717a; }
+.qc-inline-icon { vertical-align: -2px; }
+.speedtest-verdict { font-size: 12px; color: #52525b; line-height: 1.7; }
+.speedtest-verdict strong { color: #18181b; }
+
+.log-sub-stall { color: #b45309; }
+
+@media (max-width: 1100px) {
+  .quality-grid { grid-template-columns: 1fr; }
+  .speedtest-head { flex-direction: column; }
+  .speedtest-columns { grid-template-columns: 1fr; }
+}

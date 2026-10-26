@@ -37,6 +37,7 @@ import { Input } from './components/ui/input';
 import { Progress } from './components/ui/progress';
 import { Separator } from './components/ui/separator';
 import { cn, formatDate, formatFetchedAt, formatMoney } from './lib/utils';
+import { ConnectionQualityCard, RttBadge } from './connection-quality';
 import './styles.css';
 
 const API_ROOT = '/admin/api';
@@ -427,7 +428,7 @@ function AccountList({ accounts, activeAccountId, onActivate, onDelete, onRefres
   );
 }
 
-function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, onOpenAuth, onCancelAuth, onSubmitToken, authToken, authTokenShown, onAuthTokenChange, onToggleAuthToken, authTokenSaving, error, actionMessage, onActivateAccount, onDeleteAccount, onRefreshAccounts }) {
+function Overview({ config, usage, models, onLogin, onRefresh, refreshing, authSession, onOpenAuth, onCancelAuth, onSubmitToken, authToken, authTokenShown, onAuthTokenChange, onToggleAuthToken, authTokenSaving, error, actionMessage, onActivateAccount, onDeleteAccount, onRefreshAccounts }) {
   const hasUsage = Boolean(usage);
   const accounts = config?.accounts || [];
   return (
@@ -445,6 +446,8 @@ function Overview({ config, usage, onLogin, onRefresh, refreshing, authSession, 
       />
       {error && <Notice>{error}</Notice>}
       {actionMessage && <Notice type="success">{actionMessage}</Notice>}
+      {/* 连接质量卡（本分支新增）：三网段分段测量 + 流式测速，放在账号列表之前便于第一时间观察 */}
+      <ConnectionQualityCard models={models} />
       <AccountList
         accounts={accounts}
         activeAccountId={config?.activeAccountId}
@@ -605,6 +608,15 @@ function RequestLogPage({ requests, error, page, pageSize, total, loading, onPag
                         <td>
                           <span className="log-value">{speed}</span>
                           <span className="log-sub">首字 {formatLogTtft(row.ttftMs)}</span>
+                          {/* 流式间隔统计（本分支新增）：旧记录没有这些字段时不显示 */}
+                          {(row.stallCount > 0 || (row.gapP95Ms !== null && row.gapP95Ms !== undefined)) && (
+                            <span
+                              className={cn('log-sub', row.stallCount > 0 && 'log-sub-stall')}
+                              title="相邻两次上游到达的间隔分布；停顿指间隔超过 3 秒（首字之前的等待不计入）"
+                            >
+                              间隔p95 {formatLogTtft(row.gapP95Ms)}{row.stallCount > 0 ? ` · 停顿 ${row.stallCount} 次` : ''}
+                            </span>
+                          )}
                         </td>
                         <td>
                           {endpoint
@@ -1059,6 +1071,7 @@ function Dashboard({
             <button type="button" className={cn(activeView === 'settings' && 'topbar-switch-active')} onClick={() => setActiveView('settings')}>代理设置</button>
           </div>
           <div className="topbar-actions">
+            <RttBadge />
             <Badge variant={status?.healthy ? 'success' : 'danger'}><span className="status-dot" /> {status?.healthy ? '代理在线' : '代理离线'}</Badge>
             <a href="https://commandcode.ai/docs" target="_blank" rel="noreferrer" aria-label="打开文档" title="打开文档"><ArrowUpRight size={17} /></a>
             <Button type="button" size="icon" variant="ghost" onClick={onLogout} aria-label="退出登录" title="退出登录"><LogOut size={17} /></Button>
@@ -1125,6 +1138,7 @@ function Dashboard({
           <Overview
             config={config}
             usage={usage}
+            models={models}
             onLogin={onLogin}
             onRefresh={onRefreshUsage}
             onActivateAccount={onActivateAccount}

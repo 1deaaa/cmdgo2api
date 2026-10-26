@@ -13,6 +13,11 @@
  */
 
 const MAX_ERROR_DETAIL_CHARS = 4000;
+// 流式质量统计（本分支新增）：相邻两次上游读取的间隔超过该值视为疑似流停顿。
+// 首个 token 之前的等待属于 TTFT（含模型思考时间），不计入停顿。
+const STREAM_STALL_GAP_MS = 3000;
+// 每条请求最多保留的间隔样本数，防止超长流无限占用内存；样本截断只影响百分位的精度。
+const MAX_GAP_SAMPLES = 4000;
 
 /**
  * 网关密钥遮挡：保留首尾各 2 个字符，中间替换为 **。
@@ -47,6 +52,24 @@ function parseErrorBody(raw) {
 function numberOrZero(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+// 流式质量统计（本分支新增）：把相邻读取间隔归纳为 p50/p95/max 与停顿次数。
+function percentileOf(samples, ratio) {
+  if (!samples.length) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return Math.round(sorted[index]);
+}
+
+function summarizeStreamGaps(chunks, gaps, stallCount) {
+  return {
+    chunks,
+    gapP50Ms: percentileOf(gaps, 0.5),
+    gapP95Ms: percentileOf(gaps, 0.95),
+    gapMaxMs: gaps.length ? Math.round(Math.max(...gaps)) : null,
+    stallCount,
+  };
 }
 
 function buildBaseEntry(context, startedAt) {
@@ -115,7 +138,9 @@ export function instrumentUpstreamResponse(response, context, onRecord) {
     return response;
   }
 
-  void observeSuccessStream(observer.body, { ...base, httpStatus: response.status }, startedAt, report);
+  // stallGapMs 仅测试与调参使用；正常路径使用默认阈值。
+  const stallGapMs = Number(context?.stallGapMs) > 0 ? Number(context.stallGapMs) : STREAM_STALL_GAP_MS;
+  void observeSuccessStream(observer.body, { ...base, httpStatus: response.status }, startedAt, report, stallGapMs);
   return response;
 }
 
@@ -148,7 +173,7 @@ function readProviderEffort(providerOptions) {
   return null;
 }
 
-async function observeSuccessStream(body, base, startedAt, report) {
+async function observeSuccessStream(body, base, startedAt, report, stallGapMs = STREAM_STALL_GAP_MS) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -162,6 +187,12 @@ async function observeSuccessStream(body, base, startedAt, report) {
   let streamError = null;
   let streamErrorCode = 'UPSTREAM_STREAM_ERROR';
   let sawFinish = false;
+  // 流式质量统计（本分支新增）：记录相邻两次网络读取的间隔分布与停顿次数，
+  // 供控制台区分「上游停顿」与「下行积压」。
+  let prevReadAt = startedAt;
+  let chunkCount = 0;
+  let stallCount = 0;
+  const gaps = [];
 
   const handleEvent = (event, now) => {
     if (!event || typeof event !== 'object') return;
@@ -208,6 +239,15 @@ async function observeSuccessStream(body, base, startedAt, report) {
       if (done) break;
       const now = Date.now();
       lastEventAt = now;
+      chunkCount += 1;
+      // 间隔在本轮事件解析之前计算：产出首个 token 的那次读取天然被排除，
+      // 其之前的等待已经由 ttftMs 表达，不应重复计入流中间隔。
+      const gap = now - prevReadAt;
+      prevReadAt = now;
+      if ((firstReasoningAt ?? firstTextAt) !== null && gap >= 0) {
+        if (gaps.length < MAX_GAP_SAMPLES) gaps.push(gap);
+        if (gap >= stallGapMs) stallCount += 1;
+      }
       buffer += decoder.decode(value, { stream: true });
       let index;
       while ((index = buffer.indexOf('\n')) >= 0) {
@@ -239,10 +279,14 @@ async function observeSuccessStream(body, base, startedAt, report) {
     }
   }
 
+  // 即使流中途出错，已收集的间隔样本也照常上报，便于定位「卡了多久才断」。
+  const streamStats = summarizeStreamGaps(chunkCount, gaps, stallCount);
+
   if (streamError) {
     const aborted = streamErrorCode === 'ABORTED';
     report({
       ...base,
+      ...streamStats,
       status: 'error',
       errorCode: streamErrorCode,
       errorMessage: aborted ? '请求被中止（客户端断开或超时）' : streamError.split('\n')[0].slice(0, 500),
@@ -255,6 +299,7 @@ async function observeSuccessStream(body, base, startedAt, report) {
   if (!sawFinish && !usage) {
     report({
       ...base,
+      ...streamStats,
       status: 'error',
       errorCode: 'INCOMPLETE',
       errorMessage: '上游流在 finish 之前结束，未拿到 usage',
@@ -280,6 +325,7 @@ async function observeSuccessStream(body, base, startedAt, report) {
 
   report({
     ...base,
+    ...streamStats,
     status: 'success',
     effectiveEffort: effectiveEffort || null,
     provider,
