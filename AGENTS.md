@@ -40,6 +40,39 @@ systemd 下“更新并重启”的实现约定（2026-10 修复）：
 - 因此单元文件**必须**保留 `Restart=on-failure` 或 `Restart=always`；若配成 `Restart=no`，更新后会停在 inactive。
 - `RestartSec` 建议 ≤ 5s；控制台等待健康检查的上限已放宽到约 60s。
 
+### 运行时超时配置（部署参数，不在仓库内）
+
+代理的上游读空闲看门狗由环境变量控制，未设置时用默认值 `stream 30000ms / nonstream 90000ms`：
+
+- `CC_STREAM_IDLE_MS`：流式请求的上游读空闲超时；
+- `CC_NONSTREAM_IDLE_MS`：非流式请求的上游读空闲超时。
+
+本机部署取值为 `300000`（5 分钟），写在 `~/.config/commandcode-proxy/credentials.env`，
+由 `start.sh` 通过 `set -a` 注入。**该文件不在仓库内，换机器或重装时必须重新设置**，
+否则会退回 30 秒默认值，大上下文请求会重新出现误杀。
+
+验证生效值（启动日志会打印实际配置）：
+
+```bash
+systemctl --user restart commandcode-proxy.service
+grep -a "CC Proxy started" ~/.config/commandcode-proxy/autostart.log | tail -1
+# 期望：idleTimeouts":"stream 300000ms / nonstream 300000ms
+```
+
+判读 `Stream idle timeout` 日志的三个字段：
+
+| 字段 | 含义 |
+|---|---|
+| `elapsedMs` | 请求总时长，约等于 `timeoutMs` + 上游最后的静默时长 |
+| `bytesReceived` / `lastCcEvent` | `start` / `start-step` 且字节数极小 → prefill 或排队阶段的静默；`reasoning-delta` / `text-delta` / `tool-input-delta` 且字节较大 → 生成中途停顿 |
+| `model` / `path` | 用于区分是哪个上游模型、哪个协议端点（`/v1/messages`、`/v1/chat/completions`、`/v1/responses`） |
+
+注意：网关内部有 `consecutiveTimeouts` 计数，连续超时 ≥3 次后错误文案会从
+`Response timeout - request timed out` 变成
+`Response timeout - try reducing context length (summarize earlier messages)`。
+**这是计数器的产物，不代表上下文真的溢出**，不要据此压缩上下文或改写会话；
+只有上游真正返回 context overflow 错误时，才应该减少上下文。
+
 ## 上游同步流程
 
 ```bash
