@@ -446,8 +446,6 @@ function Overview({ config, usage, models, onLogin, onRefresh, refreshing, authS
       />
       {error && <Notice>{error}</Notice>}
       {actionMessage && <Notice type="success">{actionMessage}</Notice>}
-      {/* 连接质量卡（本分支新增）：三网段分段测量 + 流式测速，放在账号列表之前便于第一时间观察 */}
-      <ConnectionQualityCard models={models} />
       <AccountList
         accounts={accounts}
         activeAccountId={config?.activeAccountId}
@@ -469,6 +467,8 @@ function Overview({ config, usage, models, onLogin, onRefresh, refreshing, authS
           </div>
         </>
       )}
+      {/* 连接质量卡（本分支新增）：三网段分段测量 + 流式测速；放在限额窗口之后，先看额度再看链路 */}
+      <ConnectionQualityCard models={models} />
     </div>
   );
 }
@@ -1060,7 +1060,7 @@ function Dashboard({
     ? { title: '代理设置', kicker: 'Configuration', hint: '管理密钥、模型与进程维护' }
     : activeView === 'logs'
       ? { title: '调用日志', kicker: 'Request log', hint: '可分页查看最近保留的请求记录' }
-      : { title: '用量概览', kicker: 'Overview', hint: '每分钟自动刷新用量' };
+      : { title: '用量概览', kicker: 'Overview', hint: '连接质量自动刷新 · 用量每分钟同步' };
   return (
     <div className={cn('app-shell', activeView === 'logs' && 'app-shell-logs')}>
       <main className="main-shell">

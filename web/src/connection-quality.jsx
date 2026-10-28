@@ -8,13 +8,16 @@
  *   经 /admin/api/stream-quality 聚合；
  * - 客户端 ↔ 网关下行：服务端的写积压（背压）统计，同样来自 stream-quality。
  *
+ * 轮询节奏按场景自适应：有在途流式请求时 1 秒一次，便于观察「进行中 / 排队」的
+ * 实时变化；空闲时 5 秒一次，避免控制台长期开着时空耗请求。页面隐藏时进一步降频。
+ *
  * 流式测速是浏览器侧唯一能测量「流式负载下本机网络」的手段：
  * 通过 /admin/api/speedtest 发起一条受控的小流式请求，服务端把网关侧每个数据块
  * 的到达时间随 SSE 帧一起下发；浏览器用自己的本地到达时间对比同一条流的两组
  * 间隔，差值即本机↔网关段的附加延迟（含渲染调度抖动，仅供参考）。
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownUp, CircleAlert, Gauge, Play, Radio, Wifi } from 'lucide-react';
+import { ArrowDownUp, CircleAlert, Gauge, Play, Wifi } from 'lucide-react';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
@@ -32,6 +35,49 @@ function formatMs(value) {
   const milliseconds = Number(value);
   if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`;
   return `${(milliseconds / 1000).toFixed(2)}s`;
+}
+
+function formatSpeed(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return `每秒 ${Math.round(Number(value)).toLocaleString('zh-CN')} 个 token`;
+}
+
+function formatPercent(ratio) {
+  if (ratio === null || ratio === undefined || !Number.isFinite(Number(ratio))) return '—';
+  return `${Math.round(Number(ratio) * 100)}%`;
+}
+
+function formatCount(value, unit) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return `${Number(value).toLocaleString('zh-CN')} ${unit}`;
+}
+
+// 悬浮说明只放「术语解释」，界面上的主标签尽量使用日常说法。
+const METRIC_TIPS = {
+  rttTypical: 'p50（中位数）：把最近的探测结果从小到大排列，取中间的值，代表典型水平。',
+  rttP95: 'p95：95% 的探测结果快于这个值，用来观察偶尔出现的慢响应。',
+  rttJitter: '波动：相邻两次探测结果差值的平均值，数值越小说明网络越稳定。',
+  rttLoss: '探测失败：最近的探测里没有成功返回的比例。',
+  ttft: '首字等待（TTFT）：从发出请求到收到模型第一个字的时间，包含模型思考时间，不等于纯网络延迟。',
+  ttftP95: '95% 的请求首字等待快于这个值，用来观察慢请求能慢到什么程度。',
+  speed: '输出速度：模型每秒生成的 token 数；token 是模型处理文本的基本单位。',
+  upstreamError: '失败：最近 100 次真实请求中没有正常完成的次数。',
+  slowStreams: '接收跟不上的流：网关往客户端发送数据时，发送缓冲区曾被填满的历史流数量。',
+  queueTimes: '排队次数：发送缓冲区满、必须等客户端先读走数据的次数。',
+  drainMax: '单次最长等待：所有排队中，最长的一次等了多久。',
+  drainTotal: '累计等待：所有排队等待时间加起来的总和。',
+  gapTypical: '本次测速里，相邻两段数据到达间隔的典型值（中位数）。',
+  gapP95: '数据块间隔：相邻两段流式数据到达的时间差；p95 表示 95% 的间隔都小于这个值。',
+  gapMax: '本次测速里最长的一段数据间隔。',
+};
+
+function Metric({ label, value, tip }) {
+  return (
+    <span className="quality-metric" title={tip}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </span>
+  );
 }
 
 // ── RTT 探针单例 ─────────────────────────────────────────
@@ -107,22 +153,23 @@ export function useRttProbe() {
   return summarizeRtt(rttStore.samples);
 }
 
-function rttBadgeVariant(p50) {
-  if (p50 === null) return 'danger';
-  if (p50 < 150) return 'success';
-  if (p50 < 400) return 'warning';
-  return 'danger';
+function rttStatus(p50) {
+  if (p50 === null) return { variant: 'danger', label: '连接异常' };
+  if (p50 < 150) return { variant: 'success', label: '良好' };
+  if (p50 < 400) return { variant: 'warning', label: '一般' };
+  return { variant: 'danger', label: '较差' };
 }
 
 /** 顶栏徽章：本机 ↔ 网关的实时 RTT（空闲探测，辅助指标）。 */
 export function RttBadge() {
   const rtt = useRttProbe();
   if (!rtt.sampleCount) return null;
+  const status = rttStatus(rtt.p50);
   const title = rtt.p50 === null
     ? '本机 ↔ 网关探测失败（连续超时或断连），每 4 秒自动重试'
-    : `本机 ↔ 网关 空闲往返：p50 ${rtt.p50}ms · p95 ${rtt.p95}ms · 抖动 ${rtt.jitter}ms · 失败 ${Math.round((rtt.lossRate || 0) * 100)}%（每 4 秒探测，空闲指标仅供参考）`;
+    : `本机 ↔ 网关 空闲往返（每 4 秒采样）：典型 ${rtt.p50}ms · 95% 快于 ${rtt.p95}ms · 波动 ${rtt.jitter}ms · 探测失败 ${formatPercent(rtt.lossRate)}；只代表控制台所在设备`;
   return (
-    <Badge variant={rttBadgeVariant(rtt.p50)} title={title}>
+    <Badge variant={status.variant} title={title}>
       <Wifi size={12} />
       {rtt.p50 === null ? '连接异常' : `本机 ${Math.round(rtt.p50)}ms`}
     </Badge>
@@ -154,8 +201,14 @@ function Sparkline({ values, stroke = '#0d9488', className }) {
 }
 
 // ── 连接质量卡（用量概览页） ─────────────────────────────
-const QUALITY_POLL_MS = 5000;
+// 有在途流式请求时 1 秒刷新，便于观察「进行中 / 排队」的实时变化；
+// 空闲时 5 秒刷新，避免控制台长期开着时空耗请求。页面隐藏时再降频。
+const QUALITY_ACTIVE_POLL_MS = 1000;
+const QUALITY_IDLE_POLL_MS = 5000;
+const QUALITY_HIDDEN_POLL_MS = 15000;
 const QUALITY_TREND_MAX = 30;
+// TTFT 趋势按固定 5 秒采样，避免活跃期每秒轮询把 2.5 分钟的趋势窗压缩成 30 秒。
+const QUALITY_TREND_INTERVAL_MS = 5000;
 
 function summarizeGaps(values) {
   return {
@@ -177,6 +230,7 @@ export function ConnectionQualityCard({ models = [] }) {
   const [testResult, setTestResult] = useState(null);
   const [model, setModel] = useState('');
   const abortRef = useRef(null);
+  const lastTrendAtRef = useRef(0);
 
   const allowedModels = useMemo(
     () => models.filter((item) => item && item.id && item.allowed !== false),
@@ -189,27 +243,56 @@ export function ConnectionQualityCard({ models = [] }) {
 
   useEffect(() => {
     let stopped = false;
-    const load = async () => {
-      if (document.hidden) return;
+    let timer = null;
+    let hasActiveStream = false;
+
+    function schedule(delay) {
+      if (stopped) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(load, Math.max(250, delay));
+    }
+
+    async function load() {
+      const startedAt = performance.now();
+      if (document.hidden) {
+        schedule(QUALITY_HIDDEN_POLL_MS);
+        return;
+      }
       try {
         const response = await fetch('/admin/api/stream-quality', { credentials: 'same-origin' });
-        if (!response.ok) return; // 401 等由全局登录流程处理
-        const data = await response.json();
-        if (stopped || !data) return;
-        setQuality(data);
-        const p95 = data?.upstream?.ttftP95Ms;
-        if (p95 !== null && p95 !== undefined) {
-          setTtftTrend((current) => [...current, p95].slice(-QUALITY_TREND_MAX));
+        if (response.ok) {
+          const data = await response.json();
+          if (!stopped && data) {
+            setQuality(data);
+            hasActiveStream = Array.isArray(data?.downstream?.active) && data.downstream.active.length > 0;
+            const p95 = data?.upstream?.ttftP95Ms;
+            const now = Date.now();
+            if (p95 !== null && p95 !== undefined && now - lastTrendAtRef.current >= QUALITY_TREND_INTERVAL_MS) {
+              lastTrendAtRef.current = now;
+              setTtftTrend((current) => [...current, p95].slice(-QUALITY_TREND_MAX));
+            }
+          }
         }
       } catch {
-        // 下一次轮询再试
+        // 下一次轮询再试；不改变当前的活跃/空闲节奏
       }
+      if (stopped) return;
+      const delay = hasActiveStream ? QUALITY_ACTIVE_POLL_MS : QUALITY_IDLE_POLL_MS;
+      schedule(delay - (performance.now() - startedAt));
+    }
+
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      window.clearTimeout(timer);
+      void load();
     };
+
     void load();
-    const timer = window.setInterval(load, QUALITY_POLL_MS);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 
@@ -306,9 +389,12 @@ export function ConnectionQualityCard({ models = [] }) {
   const downstream = quality?.downstream;
   const downstreamSummary = downstream?.summary;
   const activeCount = Array.isArray(downstream?.active) ? downstream.active.length : 0;
-  const gapP95Diff = testResult && testResult.browser.p50 !== null && testResult.upstream.p50 !== null
+  const gapTypicalMs = testResult && testResult.browser.p50 !== null && testResult.upstream.p50 !== null
     ? testResult.browser.p50 - testResult.upstream.p50
     : null;
+  const rttState = rttStatus(rtt.p50);
+  const stallCount = upstream?.stallCount || 0;
+  const hasDownstreamBackpressure = (downstreamSummary?.streamsWithBackpressure || 0) > 0;
 
   return (
     <Card className="quality-card">
@@ -317,7 +403,7 @@ export function ConnectionQualityCard({ models = [] }) {
           <div className="card-heading-icon"><Gauge size={18} /></div>
           <div>
             <CardTitle>连接质量</CardTitle>
-            <CardDescription>流式链路分段测量：上游到达间隔 / 下行积压 / 本机往返，每 5 秒刷新</CardDescription>
+            <CardDescription>分三段看链路：本机到网关、网关到上游、网关到客户端。有请求进行中时每秒刷新，空闲时每 5 秒刷新；本机延迟每 4 秒采样。</CardDescription>
           </div>
         </div>
       </CardHeader>
@@ -325,50 +411,63 @@ export function ConnectionQualityCard({ models = [] }) {
         <div className="quality-grid">
           <div className="quality-cell">
             <div className="quality-cell-head">
-              <span>本机 → 网关</span>
-              <Badge variant={rttBadgeVariant(rtt.p50)} className="quality-badge">
-                {rtt.p50 === null ? (rtt.sampleCount ? '异常' : '探测中') : `${Math.round(rtt.p50)}ms`}
+              <span className="quality-cell-title" title="打开控制台的这台设备，到代理网关的响应速度">本机 → 网关</span>
+              <Badge variant={rttState.variant} className="quality-badge">
+                {rtt.p50 === null ? (rtt.sampleCount ? '连接异常' : '检测中') : `${formatMs(rtt.p50)} · ${rttState.label}`}
               </Badge>
             </div>
             <Sparkline values={rtt.series} stroke="#0d9488" />
             <div className="quality-metrics">
-              <span>p50 <strong>{formatMs(rtt.p50)}</strong></span>
-              <span>p95 <strong>{formatMs(rtt.p95)}</strong></span>
-              <span>抖动 <strong>{formatMs(rtt.jitter)}</strong></span>
-              <span>失败 <strong>{rtt.lossRate === null ? '—' : `${Math.round(rtt.lossRate * 100)}%`}</strong></span>
+              <Metric label="典型" value={formatMs(rtt.p50)} tip={METRIC_TIPS.rttTypical} />
+              <Metric label="95% 快于" value={formatMs(rtt.p95)} tip={METRIC_TIPS.rttP95} />
+              <Metric label="波动" value={formatMs(rtt.jitter)} tip={METRIC_TIPS.rttJitter} />
+              <Metric label="探测失败" value={formatPercent(rtt.lossRate)} tip={METRIC_TIPS.rttLoss} />
             </div>
-            <p className="quality-note">空闲 RTT（每 4 秒），只反映控制台自身链路；流式负载请看下方测速。</p>
+            <p className="quality-note">每 4 秒探测一次，只代表打开控制台的这台设备；真实 API 客户端的流式表现请看下方测速。</p>
           </div>
           <div className="quality-cell">
             <div className="quality-cell-head">
-              <span>网关 → 上游</span>
-              <Badge variant={(upstream?.stallCount || 0) > 0 ? 'warning' : 'success'} className="quality-badge">
-                停顿 {upstream?.stallCount ?? '—'} 次
+              <span className="quality-cell-title" title="代理网关到 Command Code 上游模型的请求质量">网关 → 上游</span>
+              <Badge variant={stallCount > 0 ? 'warning' : 'success'} className="quality-badge">
+                {upstream ? (stallCount > 0 ? `卡顿 ${stallCount} 次` : '无卡顿') : '统计中'}
               </Badge>
             </div>
             <Sparkline values={ttftTrend} stroke="#6366f1" />
             <div className="quality-metrics">
-              <span>TTFT p50 <strong>{formatMs(upstream?.ttftP50Ms)}</strong></span>
-              <span>p95 <strong>{formatMs(upstream?.ttftP95Ms)}</strong></span>
-              <span>速度 p50 <strong>{upstream?.speedP50 == null ? '—' : `${Math.round(upstream.speedP50)} tok/s`}</strong></span>
-              <span>错误 <strong>{upstream ? `${upstream.errorCount}/${upstream.sampleSize}` : '—'}</strong></span>
+              <Metric label="首字等待" value={formatMs(upstream?.ttftP50Ms)} tip={METRIC_TIPS.ttft} />
+              <Metric label="95% 快于" value={formatMs(upstream?.ttftP95Ms)} tip={METRIC_TIPS.ttftP95} />
+              <Metric label="输出速度" value={formatSpeed(upstream?.speedP50)} tip={METRIC_TIPS.speed} />
+              <Metric label="失败" value={upstream ? `${upstream.errorCount} / ${upstream.sampleSize} 次` : '—'} tip={METRIC_TIPS.upstreamError} />
             </div>
-            <p className="quality-note">最近 100 条真实请求的聚合；间隔 p95 参考 {formatMs(upstream?.lastGapP95Ms)}。TTFT 含模型思考时间。</p>
+            <p className="quality-note" title={METRIC_TIPS.gapP95}>
+              最近 100 次真实请求的统计，首字等待含模型思考时间。
+              {upstream?.lastGapP95Ms !== null && upstream?.lastGapP95Ms !== undefined && (
+                <>数据块间隔（95%）≤ {formatMs(upstream.lastGapP95Ms)}。</>
+              )}
+            </p>
           </div>
           <div className="quality-cell">
             <div className="quality-cell-head">
-              <span>客户端 → 网关下行</span>
-              <Badge variant={(downstreamSummary?.streamsWithBackpressure || 0) > 0 ? 'warning' : 'success'} className="quality-badge">
-                在途 {activeCount}
+              <span className="quality-cell-title" title="代理网关把流式结果发给 API 客户端的过程">客户端 → 网关下行</span>
+              <Badge
+                variant={hasDownstreamBackpressure ? 'warning' : 'neutral'}
+                className="quality-badge"
+                title={hasDownstreamBackpressure ? '最近的流式连接里出现过客户端接收跟不上的情况，详见下方指标' : undefined}
+              >
+                {downstream ? (activeCount > 0 ? `进行中 ${activeCount} 条` : '当前空闲') : '统计中'}
               </Badge>
             </div>
             <div className="quality-metrics quality-metrics-stack">
-              <span>积压流 <strong>{downstreamSummary ? `${downstreamSummary.streamsWithBackpressure}/${downstreamSummary.sampleSize}` : '—'}</strong></span>
-              <span>积压事件 <strong>{downstreamSummary?.backpressureEvents ?? '—'}</strong></span>
-              <span>最长等待 <strong>{formatMs(downstreamSummary?.maxDrainWaitMs)}</strong></span>
-              <span>累计等待 <strong>{formatMs(downstreamSummary?.totalDrainWaitMs)}</strong></span>
+              <Metric
+                label="接收跟不上的流"
+                value={downstreamSummary ? `${downstreamSummary.streamsWithBackpressure} / ${downstreamSummary.sampleSize} 条` : '—'}
+                tip={METRIC_TIPS.slowStreams}
+              />
+              <Metric label="排队次数" value={formatCount(downstreamSummary?.backpressureEvents, '次')} tip={METRIC_TIPS.queueTimes} />
+              <Metric label="单次最长等待" value={formatMs(downstreamSummary?.maxDrainWaitMs)} tip={METRIC_TIPS.drainMax} />
+              <Metric label="累计等待" value={formatMs(downstreamSummary?.totalDrainWaitMs)} tip={METRIC_TIPS.drainTotal} />
             </div>
-            <p className="quality-note">写缓冲堆积说明客户端消费跟不上（近 60 条流式连接）；上游正常而这里频繁积压，问题在客户端网络。</p>
+            <p className="quality-note">客户端收得慢时，网关的发送队列会排队；这里频繁出现排队，通常是客户端网络或设备性能问题。</p>
           </div>
         </div>
 
@@ -376,7 +475,7 @@ export function ConnectionQualityCard({ models = [] }) {
           <div className="speedtest-head">
             <div>
               <strong>流式测速</strong>
-              <span>发起一条受控的小流式请求，对比同一条流在「网关侧」与「本机浏览器侧」的到达间隔，两组曲线的差值即本机↔网关段的附加延迟。</span>
+              <span>发一条很小的流式请求，同时记录网关与浏览器收到每个数据块的时间；两者之差就是这台设备到网关的额外延迟。</span>
             </div>
             <div className="speedtest-controls">
               {allowedModels.length ? (
@@ -399,7 +498,7 @@ export function ConnectionQualityCard({ models = [] }) {
               )}
               {testState === 'running' ? (
                 <Button type="button" size="sm" variant="secondary" onClick={() => abortRef.current?.abort()}>
-                  停止 · {testProgress.chunks} 帧 / {(testProgress.elapsedMs / 1000).toFixed(1)}s
+                  停止 · 已收 {testProgress.chunks} 块 / {(testProgress.elapsedMs / 1000).toFixed(1)}s
                 </Button>
               ) : (
                 <Button type="button" size="sm" onClick={runSpeedtest} disabled={!model.trim()}>
@@ -413,28 +512,29 @@ export function ConnectionQualityCard({ models = [] }) {
             <div className="speedtest-results">
               <div className="speedtest-columns">
                 <div className="speedtest-col">
-                  <span className="qc-label">网关侧到达间隔（网关 → 上游）</span>
+                  <span className="qc-label">网关收到数据的间隔（上游 → 网关）</span>
                   <Sparkline values={testResult.upstreamSeries} stroke="#6366f1" />
                   <div className="quality-metrics">
-                    <span>p50 <strong>{formatMs(testResult.upstream.p50)}</strong></span>
-                    <span>p95 <strong>{formatMs(testResult.upstream.p95)}</strong></span>
-                    <span>max <strong>{formatMs(testResult.upstream.max)}</strong></span>
+                    <Metric label="典型" value={formatMs(testResult.upstream.p50)} tip={METRIC_TIPS.gapTypical} />
+                    <Metric label="95% 小于" value={formatMs(testResult.upstream.p95)} tip={METRIC_TIPS.gapP95} />
+                    <Metric label="最长" value={formatMs(testResult.upstream.max)} tip={METRIC_TIPS.gapMax} />
                   </div>
                 </div>
                 <div className="speedtest-col">
-                  <span className="qc-label">本机浏览器到达间隔（含本机 ↔ 网关段）</span>
+                  <span className="qc-label">浏览器收到数据的间隔（上游 → 本机）</span>
                   <Sparkline values={testResult.browserSeries} stroke="#0d9488" />
                   <div className="quality-metrics">
-                    <span>p50 <strong>{formatMs(testResult.browser.p50)}</strong></span>
-                    <span>p95 <strong>{formatMs(testResult.browser.p95)}</strong></span>
-                    <span>max <strong>{formatMs(testResult.browser.max)}</strong></span>
+                    <Metric label="典型" value={formatMs(testResult.browser.p50)} tip={METRIC_TIPS.gapTypical} />
+                    <Metric label="95% 小于" value={formatMs(testResult.browser.p95)} tip={METRIC_TIPS.gapP95} />
+                    <Metric label="最长" value={formatMs(testResult.browser.max)} tip={METRIC_TIPS.gapMax} />
                   </div>
                 </div>
               </div>
               <div className="speedtest-verdict">
                 模型 <strong>{testResult.model || '—'}</strong> · 首字 <strong>{formatMs(testResult.ttftMs)}</strong> · 总时长 <strong>{formatMs(testResult.durationMs)}</strong> ·{' '}
-                本机段附加延迟 p50 ≈ <strong>{gapP95Diff === null ? '—' : `${Math.round(gapP95Diff)}ms`}</strong>
-                （浏览器 p50 − 网关 p50，含渲染调度抖动，仅供参考；<ArrowDownUp size={12} className="qc-inline-icon" /> 两条曲线形状越接近，链路越透明）
+                本机网络额外延迟（典型）≈ <strong>{gapTypicalMs === null ? '—' : `${Math.round(gapTypicalMs)}ms`}</strong>
+                <br />
+                算法：浏览器典型值 − 网关典型值，含浏览器渲染抖动，仅供参考；<ArrowDownUp size={12} className="qc-inline-icon" /> 两条曲线越接近，说明本机网络对流式传输的影响越小。
               </div>
             </div>
           )}
